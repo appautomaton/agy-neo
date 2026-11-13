@@ -1,0 +1,27 @@
+{{if .Data}}
+{{- if .Data.PreloadedSkills}}
+Preloaded skills, with `SKILL.md` inlined (do not reread):
+
+{{range .Data.PreloadedSkills -}}
+<preloaded_skill name="{{.GetName}}" path="{{.GetPath}}" description="{{.GetDescription}}">
+{{.GetContent}}
+</preloaded_skill>
+{{end -}}
+{{end}}
+{{- $hasSkills := false -}}
+{{- range .Data.Skills -}}
+  {{- if and (ne .GetName "agy-customizations") (ne .GetName "antigravity-guide") -}}{{- $hasSkills = true -}}{{- end -}}
+{{- end -}}
+{{- if $hasSkills}}
+Before a task a skill covers, you MUST read its `SKILL.md` at the listed path, unless a subagent you delegate to will.
+
+{{range .Data.Skills -}}
+{{- if and (ne .GetName "agy-customizations") (ne .GetName "antigravity-guide") -}}
+- {{.GetName}} ({{.GetPath}}): {{.GetDescription}}
+{{end -}}
+{{- end -}}
+{{- end}}
+{{- if .Data.TruncatedPrompt}}
+{{.Data.TruncatedPrompt}}
+{{- end}}
+{{- end}}

@@ -1,0 +1,410 @@
+{
+ "DefaultSerializer.stepToMessage -> disable 64K STEP_TYPE_USER_INPUT clamp": [
+  "e9207131d4420ac2"
+ ],
+ "TrajectoryChatConverter.getMaxTokensForStep -> disable 64K USER_INPUT clamp": [
+  "6e33c558093fb377"
+ ],
+ "config.applyFeatureProviderCheckpointOverrideConfig -> zero expCp.MaxTokenLimit": [
+  "8db83f9833aba2f0"
+ ],
+ "defaultmodels.Gemini36Flash -> Gemini 4 Hydrogen info, efforts low-xhigh": [
+  "34e2cfc997ed9092"
+ ],
+ "defaultmodels.init: gemini-4-hydrogen-high in place of gemini-3.6-flash-high": [
+  "46bb35e1da0b4582"
+ ],
+ "defaultmodels.init: gemini-4-hydrogen-low in place of gemini-3.6-flash-low": [
+  "886b4173831c26f7"
+ ],
+ "defaultmodels.init: gemini-4-hydrogen-medium in place of gemini-3.6-flash-medium": [
+  "44015b6786732e85"
+ ],
+ "defaultmodels.init: gemini-4-hydrogen-xhigh in place of gemini-3.7-flash-low": [
+  "886b4173831c26f7"
+ ],
+ "geminimodels map: gemini-4-hydrogen-high -> gemini-4-hydrogen (in place of gemini-3.6-flash-high)": [
+  "fb87de9f1645d047"
+ ],
+ "geminimodels map: gemini-4-hydrogen-low -> gemini-4-hydrogen (in place of gemini-3.6-flash-low)": [
+  "e7dea914063c261b"
+ ],
+ "geminimodels map: gemini-4-hydrogen-medium -> gemini-4-hydrogen (in place of gemini-3.6-flash-medium)": [
+  "ac85243a0f1ae75a"
+ ],
+ "geminimodels map: gemini-4-hydrogen-xhigh -> gemini-4-hydrogen (in place of gemini-3.7-flash-low)": [
+  "e7dea914063c261b"
+ ],
+ "geminimodels.Catalog: gemini-4-hydrogen-high (Gemini 4 Hydrogen (High)) in place of gemini-3.6-flash-high": [
+  "5ac3a7272a2b8b9f"
+ ],
+ "geminimodels.Catalog: gemini-4-hydrogen-low (Gemini 4 Hydrogen (Low)) in place of gemini-3.6-flash-low": [
+  "81391f3eeed7cfb6"
+ ],
+ "geminimodels.Catalog: gemini-4-hydrogen-medium (Gemini 4 Hydrogen (Medium)) in place of gemini-3.6-flash-medium": [
+  "e9bb3f777e76242a"
+ ],
+ "geminimodels.Catalog: gemini-4-hydrogen-xhigh (Gemini 4 Hydrogen (XHigh)) in place of gemini-3.7-flash-low": [
+  "4718be77929cf326"
+ ],
+ "geminimodels.Catalog: order Hydrogen xhigh-low where its donors stood": [
+  "fa0bf2b1fd9698cd"
+ ],
+ "genairequest.toGenaiThinkingLevel -> name level 100 XHIGH, not EXTRA_HIGH": [
+  "f7cc6b974242f9c9"
+ ],
+ "halloween.init.0 -> Halloween is not registered (its logo rows hold the spinner frames)": [
+  "c9ecc984c52e940d"
+ ],
+ "model.(*ConversationModel).activityCandidate -> Compacting shows its plain label": [
+  "4cd5395fbe37963a"
+ ],
+ "model.(*ConversationModel).activityCandidate -> Thinking shows its label, not the thought": [
+  "e9207131d4420ac2"
+ ],
+ "model.(*ConversationModel).activityCandidate -> generating, thinking, running: one of 24 verbs per turn": [
+  "224bff34dd3c4529"
+ ],
+ "model.(*ConversationModel).activityCandidate -> past Thinking, go pick the verb": [
+  "61835a965c00a370"
+ ],
+ "model.(*ConversationModel).pendingLineView -> `…` after the text, not `...`": [
+  "00301e07eb8dfd89"
+ ],
+ "model.(*ConversationModel).pendingLineView -> a non-empty line takes the decoration's join too": [
+  "35af6daa88f94491"
+ ],
+ "model.(*ConversationModel).pendingLineView -> a tip hides the status, not the elapsed time": [
+  "0f6ffea9887556d0"
+ ],
+ "model.(*ConversationModel).pendingLineView -> lay out text, suffix, status even with no status": [
+  "ae4fb47c7ec66802"
+ ],
+ "model.(*ConversationModel).pendingLineView -> padding comes from elapsedSuffix(m, pad)": [
+  "31f67de5b61bc245"
+ ],
+ "model.(*ConversationModel).pendingLineView -> the frame keeps its one space; no second": [
+  "db453276c8697538"
+ ],
+ "model.(*ConversationModel).pendingLineView -> the join sets up in the gap's leaf": [
+  "3ada1dca97c0867c"
+ ],
+ "model.(*ConversationModel).pendingLineView -> the text gives 50 columns to the suffix": [
+  "f103475e6f4e3e49"
+ ],
+ "model.(*ConversationModel).pinHeader -> 1-line sticky header height": [
+  "bdc5c2efa50a15de"
+ ],
+ "model.(*ConversationModel).populateLayout -> the pending row is reserved twice: the gap, then the line": [
+  "4d2d01ff8b3778d9"
+ ],
+ "model.(*ConversationModel).refreshActivityLabel -> stamp the start for every busy state": [
+  "491baecbde00f3eb"
+ ],
+ "model.(*ConversationModel).renderPendingLight -> always light with the theme path, as Halloween": [
+  "61396d554734907c"
+ ],
+ "model.(*ConversationModel).renderPendingLight -> at `medium` speed the band moves a column per 100 ms": [
+  "9cf579ff0dd4639d"
+ ],
+ "model.(*ConversationModel).renderPendingLight -> at the default speed the band moves a column per 100 ms": [
+  "9cf579ff0dd4639d"
+ ],
+ "model.(*ConversationModel).stickyPromptAt -> 1-line sticky header click hit-test": [
+  "2e935944ef304b15"
+ ],
+ "model.(*ConversationModel).stickyPromptItem -> 1-line sticky header threshold": [
+  "c2b3a795669471d6"
+ ],
+ "model.ContextModel.collectStats -> effective context window in /context": [
+  "9229990291334ba4"
+ ],
+ "model.SelectorModel.offersContextWindow -> admit Gemini 4 *": [
+  "205a1fd35ddce402"
+ ],
+ "model.SelectorModel.offersContextWindow -> return true": [
+  "4d17e16971e33181"
+ ],
+ "model.SelectorModel.offersContextWindow -> whitelist miss enters extra-model matcher": [
+  "6e0a0312dc758aed"
+ ],
+ "model.compactingLabel -> elapsedSuffix(m, pad): ` (8s ⋅ thinking)`, faint, of the time since the start": [
+  "2a39830d19abab52"
+ ],
+ "render.RenderBackgroundCommandOutput @+0x20 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.RenderBackgroundCommandOutput @+0x80 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.RenderSubagentItem @+0x5c -> `⋆`": [
+  "8cb21e01aac21050"
+ ],
+ "render.RunningDot @+0x24 -> `⊹`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.RunningDot @+0x84 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.RunningLightWindow -> short text swings back and forth too, at its own step": [
+  "5b6aeff329308702"
+ ],
+ "render.StatusMarker @+0x114 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.StatusMarker @+0x174 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.StatusMarker @+0x48 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.StatusMarker @+0xb4 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.StickyPrompt -> dimmed Faint `> ` chevron (\\x1b[2m> \\x1b[22m)": [
+  "bde75f5b151dfd25"
+ ],
+ "render.StickyPrompt -> full-width background bar (s.props=0x2800, s.width=termWidth)": [
+  "10662bcda4dbeffc"
+ ],
+ "render.StickyPrompt -> return 1-line sticky header slice (len=1)": [
+  "c259553a87c14c08"
+ ],
+ "render.StickyPrompt -> skip `───` horizontal rule construction": [
+  "aaec0330ed154838"
+ ],
+ "render.StickyPrompt -> skip `───` rule styling": [
+  "7a8b2d3cf8cc5e2c"
+ ],
+ "render.StickyPrompt dead span (Site #29) -> color-scheme event matcher": [
+  "395ef1a8232f24bc"
+ ],
+ "render.collapsedThinkingSnippet -> ` (<first line>)` instead of the last paragraph": [
+  "76471b69dc7ccd85"
+ ],
+ "render.collapsedThinkingSnippet -> fit to the width minus the collapsed CoT header": [
+  "bdc5c2efa50a15de"
+ ],
+ "render.glamourStyleForScheme -> inline `code` check uses palette[+0x0d0] (ANSI 3)": [
+  "a4da03e3835e8da3"
+ ],
+ "render.glamourStyleForScheme -> inline `code` color uses palette[+0x0d0] (ANSI 3)": [
+  "5255a4048401e14d"
+ ],
+ "render.renderCommandOutput -> `⎿` elbow in the reply's faint style, not the user bar's": [
+  "1dc6ae0587d35053"
+ ],
+ "render.renderOutputLines -> `⎿` elbow in the reply's faint style, not the user bar's": [
+  "38a88f35079a37b9"
+ ],
+ "render.renderStyledLines -> `⎿` elbow in the reply's faint style, not the user bar's": [
+  "38a88f35079a37b9"
+ ],
+ "render.renderUserPrompt -> dimmed Faint `> ` chevron (\\x1b[2m> \\x1b[22m)": [
+  "b66df6e29b5c71e7"
+ ],
+ "render.renderUserPrompt -> full-width background bar (s.props=0x2800, s.width=termWidth)": [
+  "a458fb277cca6c40"
+ ],
+ "render.renderUserPrompt -> omit `───` horizontal rule above user prompt": [
+  "d1472ffc11ccfbcb"
+ ],
+ "render.resolveStyles -> PromptChevron (`>` in input box) native Faint (\\x1b[2m)": [
+  "883e32a493012602"
+ ],
+ "render.resolveStyles -> Styles[+0x0000] (UserPrompt) Regular + adaptive 256-color bg": [
+  "60a49109820be1bd"
+ ],
+ "render.resolveStyles -> Styles[+0x0288] (ToolName `Bash`/`Edit`/`Read`) colorless Bold": [
+  "1822be489bb36d69"
+ ],
+ "render.resolveStyles -> Styles[+0x0510] (ToolArgs `(xxx)` & CoT header) native Faint (\\x1b[2m)": [
+  "883e32a493012602"
+ ],
+ "render.resolveStyles -> terminal mouse selection highlight native Reverse (\\x1b[7m)": [
+  "883e32a493012602"
+ ],
+ "render.semanticMilestoneLines @+0x404 -> `⊹`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.semanticMilestoneLines @+0x980 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.semanticMilestoneLines @+0x9e8 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.statusMarker @+0x160 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.statusMarker @+0xf4 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.stepContent -> a collapsed thought keeps its snippet beside an answer": [
+  "109e31809051f362"
+ ],
+ "render.stepContent -> a collapsed thought under `high` expands; else its header is `∴ <header>`": [
+  "5b53efe6f0d81e5d"
+ ],
+ "render.stepContent -> a running thought asks whether verbosity is `high`": [
+  "ff9d77633ad8e9b8"
+ ],
+ "render.stepContent -> a running thought in the full branch: empty header, straight to the body": [
+  "e03822a46af53499"
+ ],
+ "render.stepContent -> a running thought under `high`: the full block, else the live one-liner": [
+  "d99c6a4d4d7f315e"
+ ],
+ "render.stepContent -> mutate CoT header `▾ Thought...` to `∴ Thought...`": [
+  "d04e3cf1d7f67001"
+ ],
+ "render.stepContent -> omit 2-space leading indent on CoT body paragraphs": [
+  "aa6c0275e6ac3f70"
+ ],
+ "render.stepContent -> outside `high`, the CoT header leaves out the token count": [
+  "10cafc2de9cb45b9"
+ ],
+ "render.stepContent -> style CoT body paragraphs with Faint + Italic (\\x1b[2;3m)": [
+  "10662bcda4dbeffc"
+ ],
+ "render.stepContent -> the CoT block is body, then its `∴ Thought for` line": [
+  "502fe14213700ba3"
+ ],
+ "render.stepContent -> the CoT header asks whether verbosity is `high` before its token count": [
+  "b15032230242ce1b"
+ ],
+ "render.stepContent -> the collapsed header's `Sprintf` becomes `concatstring2`": [
+  "c9ecc984c52e940d"
+ ],
+ "render.stepContent -> the collapsed snippet joins its header on one line": [
+  "db453276c8697538"
+ ],
+ "render.stepContent -> the collapsed snippet loses its two-space indent": [
+  "aa6c0275e6ac3f70"
+ ],
+ "render.stepContent -> the mark before the snippet, not the suffix after it": [
+  "f65ee2b16557f177"
+ ],
+ "render.stepContent -> the running thought leads with `∴ `, without its own `(8s)`": [
+  "cb9485055272b2a2"
+ ],
+ "render.stripMarkdownFormatting -> collapse CoT `\\n\\n\\n` to `\\n\\n` (1 empty line between paragraphs)": [
+  "b72f6489c8c8eb95"
+ ],
+ "render.toolMarker @+0x110 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.toolMarker @+0x1a4 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.toolMarker @+0x210 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.toolMarker @+0x27c -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowAgentRow @+0x150 -> `⊹`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowAgentRow @+0x1bc -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowAgentRow @+0x228 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowAgentRow @+0x7c -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowAgentRow @+0xe8 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowCallRow @+0x104 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowCallRow @+0x15c -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowCallRow @+0x54 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowCallRow @+0xac -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowMarker @+0x16c -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowMarker @+0x1d8 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowMarker @+0x60 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "store.(*Manager).SetTerminalBackground -> live Dark(237)/Light(254) user bar + RerenderAll": [
+  "9ce6fb815f26b1cf"
+ ],
+ "store.(*Manager).userInputLoop -> 15s idle statusline refresh": [
+  "e0487ca4a5699246"
+ ],
+ "store.(*Store).ContextWindow -> (*Store).ContextWindowChoice": [
+  "aa5cb9fbff285b38"
+ ],
+ "store.(*Store).ContextWindow -> admit Gemini 4 *": [
+  "174eda55fe15179e"
+ ],
+ "store.(*Store).ContextWindow -> whitelist miss enters extra-model matcher": [
+  "6e0a0312dc758aed"
+ ],
+ "store.(*Store).ModelMaxTokens -> effective context window limit resolver": [
+  "62f795c325abe189"
+ ],
+ "store.(*textDrip).flush -> nil next step: the same question": [
+  "2ac4072cf4eaf252"
+ ],
+ "store.(*textDrip).flush -> no next step: go ask whether the answer is still empty": [
+  "e9057c0d8f7f0d76"
+ ],
+ "store.(*textDrip).flush -> skip the verbose log; empty answer: hand over the thinking step": [
+  "b67db4379fb82814"
+ ],
+ "store.BuildStatusLineData -> actual API input + cache_read numerator": [
+  "c622ace3e4118710"
+ ],
+ "store.BuildStatusLineData -> disable exceeds_200k_tokens false alarm": [
+  "74d738957d65d910"
+ ],
+ "store.BuildStatusLineData -> effective context window denominator": [
+  "6a5f64d12d2609b5"
+ ],
+ "store.canMergeConsecutiveThoughts -> a thought never joins the tool group before it": [
+  "a4da03e3835e8da3"
+ ],
+ "store.canUpgradeTrailingThoughtToToolGroup -> never (a tool call does not absorb the thought before it)": [
+  "dd609dea166e6213"
+ ],
+ "store.findLastToolGroupAbsIdx -> a step with thought stops the scan at every verbosity": [
+  "7679491eeac7dd9e"
+ ],
+ "tea.(*Program).translateInputEvent -> light/dark notification becomes an OSC 11 background query": [
+  "8ee02d125c2d3010"
+ ],
+ "tea.(*cursedRenderer).close -> always disable the reporting mode": [
+  "fa8742f3d9a3138a"
+ ],
+ "tea.(*cursedRenderer).flush -> enable the reporting mode on the first frame": [
+  "d77eaa9302acdf19"
+ ],
+ "tea.(*cursedRenderer).start -> always enable the reporting mode": [
+  "0bcf2cbfbfdd7ca2"
+ ],
+ "themerender.runningLightAt -> the band's base is the turn's stage color, not palette[+0x130]": [
+  "084fd15277ddc00b"
+ ],
+ "types.init -> terminal palette[+0x020] (Spinner & TUI Selector) nil (Primary Fg)": [
+  "8b4cd2851f0fad67"
+ ],
+ "types.init -> terminal palette[+0x040] (User prompt) nil (Primary Fg)": [
+  "8b4cd2851f0fad67"
+ ],
+ "utils.GetCheckpointConfig -> remove 256K (0x3e800) ceiling": [
+  "0f92087bef940644"
+ ]
+}

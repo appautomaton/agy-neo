@@ -1,0 +1,11 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.cache/
+.capture-state/
+.claude/
+dist/
+
+# Google's originals, captured from the binary for local review; never published.
+templates/*/stock/
+templates/*/go_generated.md

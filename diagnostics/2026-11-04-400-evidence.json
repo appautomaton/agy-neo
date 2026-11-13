@@ -1,0 +1,12 @@
+{
+  "source_conversation": "<conversation-id>",
+  "source_trajectory": "<trajectory-id>",
+  "failed_replay_log": "agy-cpa-outbound-v1beta-models-gemini-4-argon-streamGenerateContent-2026-11-04T223244-247d62f4.log",
+  "successful_replay_log": "agy-outbound-good-v1beta-models-gemini-4-argon-streamGenerateContent-2026-11-04T230307-20ec9f67.log",
+  "failed_status": 400,
+  "successful_status": 200,
+  "raw_payload_equal_excluding_requestId": true,
+  "raw_payload_normalized_sha256": "97968e621cb3f7585577b9c8ee9dc6254d02e266e0231588a9d2354ccfb617de",
+  "recovery_fork": "<fork-conversation-id>",
+  "new_error_steps_in_recovery_fork": 0
+}
