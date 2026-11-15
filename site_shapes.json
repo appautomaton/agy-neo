@@ -191,6 +191,9 @@
  "render.glamourStyleForScheme -> inline `code` color uses palette[+0x0d0] (ANSI 3)": [
   "5255a4048401e14d"
  ],
+ "render.isInFlightThinkingOnly -> false (keep live thoughts visible while running)": [
+  "158c93c1f94e4f79"
+ ],
  "render.renderCommandOutput -> `⎿` elbow in the reply's faint style, not the user bar's": [
   "1dc6ae0587d35053"
  ],
@@ -289,6 +292,12 @@
  ],
  "render.stripMarkdownFormatting -> collapse CoT `\\n\\n\\n` to `\\n\\n` (1 empty line between paragraphs)": [
   "b72f6489c8c8eb95"
+ ],
+ "render.thoughtBodyRows -> omit 2-space leading indent on CoT body paragraphs": [
+  "aa6c0275e6ac3f70"
+ ],
+ "render.thoughtBodyRows -> style CoT body paragraphs with Faint + Italic (\\x1b[2;3m)": [
+  "10662bcda4dbeffc"
  ],
  "render.toolMarker @+0x110 -> `⋆`": [
   "00301e07eb8dfd89"

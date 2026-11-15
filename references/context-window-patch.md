@@ -14,6 +14,7 @@ Target binaries (`darwin/arm64`):
   - `agy v1.5.6` (`233,521,200` bytes, original `SHA-256: c55b821d5efcfd7ca7fdadbc870d1247cc0ccd31137291fee83fb0e342dc753a`)
   - `agy v1.5.7` (`234,512,352` bytes, original `SHA-256: e872cc54b5381f401c798fc947937a0a930876b849bc3fee654996ba4ab236a8`): every anchor resolves unchanged; the medium, high, `--continue` and ctrl+o screens match `v1.5.6` frame for frame
   - `agy v1.5.8` (`235,205,648` bytes, original `SHA-256: b127126993e1c5b7e0b1ef80fa9bbe6955ddb85a5d76a3310b6096acc7eb000a`): 95 sites. Site #7d and Sites #19–#21 were re-anchored (§5.2, §5.6), Sites #55a–#55p retire because the release ships Hydrogen itself, and `probe_agy.py` shows the same requests and screens as `v1.5.7`
+  - `agy v1.5.9` (`223,424,816` bytes, original `SHA-256: fad3628ad91fe8613a72f074a1c5fde7cd816517788a5b9be96703f7d256741a`): 143 sites. Sites #10–#11 follow the extracted CoT body loop into `render.thoughtBodyRows`, Site #53c handles `stepContent`'s inline running-step bail-out, Site #51g disables `render.isInFlightThinkingOnly` so live thoughts stay visible while streaming, and `probe_agy.py` shows the same requests and screens as `v1.5.8`
   - Future `v1.5.x+` releases via dynamic Mach-O `__lrodata_gopcln` symbol, prologue stack-slot, & instruction-anchor resolution
 
 ---

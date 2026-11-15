@@ -133,6 +133,11 @@ TARGET_SYMBOLS: dict[str, str] = {
     "halloweenRunningLight": "google3/third_party/jetski/cli/theme/halloween/halloween.halloween.RunningLight",
 }
 
+OPTIONAL_SYMBOLS: dict[str, str] = {
+    "thoughtBodyRows": "google3/third_party/jetski/cli/render/render.thoughtBodyRows",
+    "isInFlightThinkingOnly": "google3/third_party/jetski/cli/render/render.isInFlightThinkingOnly",
+}
+
 # Sites #38-#40: the Gemini API wire model for Carbon, and the map entries that carry it. They retire
 # once upstream maps Carbon itself (v1.5.7), which frees their donor entries for Sites #55a-#55p.
 GEMINI_WIRE_MODEL = "gemini-4-carbon"
@@ -380,10 +385,16 @@ def fold_lipgloss_copy_x5_x4(attr_mask: int) -> bytes:
 
 def locate_target_functions(data: bytes | bytearray) -> dict[str, tuple[int, int]]:
     """Parse Mach-O __lrodata_gopcln to return {key: (start_offset, end_offset)}, cached by Mach-O header digest."""
-    hdr_key = f"{len(data)}:{hashlib.blake2b(bytes(data[:4096]), digest_size=8).hexdigest()}"
+    all_symbols = {**TARGET_SYMBOLS, **OPTIONAL_SYMBOLS}
+    sym_sig = hashlib.blake2b(repr(sorted(all_symbols.items())).encode(), digest_size=4).hexdigest()
+    hdr_key = f"{len(data)}:{hashlib.blake2b(bytes(data[:4096]), digest_size=8).hexdigest()}:{sym_sig}"
     cache = _load_meta_cache()
     cached_bounds = cache.get("pclntab", {}).get(hdr_key)
-    if isinstance(cached_bounds, dict) and set(cached_bounds) == set(TARGET_SYMBOLS):
+    if (
+        isinstance(cached_bounds, dict)
+        and set(TARGET_SYMBOLS) <= set(cached_bounds)
+        and set(cached_bounds) <= set(all_symbols)
+    ):
         return {k: (v[0], v[1]) for k, v in cached_bounds.items()}
 
     magic, _, _, _, ncmds, _, _, _ = struct.unpack_from("<IIIIIIII", data, 0)
@@ -419,7 +430,7 @@ def locate_target_functions(data: bytes | bytearray) -> dict[str, tuple[int, int
     funcnametab_off = gopcln_off + struct.unpack_from("<Q", data, gopcln_off + 32)[0]
     functab_off = gopcln_off + struct.unpack_from("<Q", data, gopcln_off + 64)[0]
 
-    reverse_map = {sym.encode("utf-8"): key for key, sym in TARGET_SYMBOLS.items()}
+    reverse_map = {sym.encode("utf-8"): key for key, sym in all_symbols.items()}
     found: dict[str, tuple[int, int]] = {}
     text_file_base = text_addr - VM_BASE
 
@@ -432,7 +443,7 @@ def locate_target_functions(data: bytes | bytearray) -> dict[str, tuple[int, int
         if key is not None:
             next_entry_off = struct.unpack_from("<I", data, functab_off + (i + 1) * 8)[0]
             found[key] = (text_file_base + entry_off, text_file_base + next_entry_off)
-            if len(found) == len(TARGET_SYMBOLS):
+            if len(found) == len(all_symbols):
                 break
 
     missing = set(TARGET_SYMBOLS) - set(found)
@@ -845,17 +856,38 @@ def _resolve_cot_sites(
     s9_off = s8_off + 0x84
     s9_va = VM_BASE + s9_off
 
-    # 10 & 11. render.stepContent -> omit 2-space paragraph prefix & style CoT body paragraphs with Faint + Italic (\x1b[2;3m)
-    b_cot_loop_off = find_unique_anchor(
-        data,
-        (s8_off, s8_off + 0x140),
-        bytes.fromhex("e2031faae3031faae4031faae5031faa"),
-        "Site 10 (stepContent CoT body loop branch)",
-    )
-    cot_loop_entry_off = decode_branch_target(data, b_cot_loop_off, 0x14000000, "Site 10 (CoT body loop)") - VM_BASE
-    s10_off = cot_loop_entry_off + 0x54
+    # 10 & 11. omit 2-space paragraph prefix & style CoT body paragraphs with Faint + Italic (\x1b[2;3m).
+    # In v1.5.9+, upstream extracted the CoT body paragraph loop into render.thoughtBodyRows; earlier
+    # releases inline it in render.stepContent.
+    if "thoughtBodyRows" in funcs:
+        tbr = funcs["thoughtBodyRows"]
+        cats = _calls_to(data, tbr, funcs["concatstring2"][0])
+        if len(cats) != 1:
+            raise RuntimeError(f"thoughtBodyRows: expected one `concatstring2`, found {len(cats)}")
+        cat = cats[0]
+        if struct.unpack_from("<I", data, cat - 4)[0] not in (0xB27F03E2, 0xAA1F03E2):
+            raise RuntimeError("thoughtBodyRows: expected 2-byte prefix length before `concatstring2`")
+        s10_off = cat - 4
+        sp5 = _decode_sp_add(data, cat + 12)
+        if sp5 is None or sp5[1] != 5 or sp5[2] != 8:
+            raise RuntimeError("thoughtBodyRows: expected `add x5, sp, #8` for Style receiver")
+        sp6 = _decode_sp_add(data, cat + 12 + sp5[0])
+        if sp6 is None or sp6[1] != 6:
+            raise RuntimeError("thoughtBodyRows: expected `add x6, sp, #...` for Styles[+0x510]")
+        s11_off = cat + 12 + sp5[0] + sp6[0]
+        cot_fn = "render.thoughtBodyRows"
+    else:
+        b_cot_loop_off = find_unique_anchor(
+            data,
+            (s8_off, s8_off + 0x140),
+            bytes.fromhex("e2031faae3031faae4031faae5031faa"),
+            "Site 10 (stepContent CoT body loop branch)",
+        )
+        cot_loop_entry_off = decode_branch_target(data, b_cot_loop_off, 0x14000000, "Site 10 (CoT body loop)") - VM_BASE
+        s10_off = cot_loop_entry_off + 0x54
+        s11_off = cot_loop_entry_off + 0x74
+        cot_fn = "render.stepContent"
     s10_va = VM_BASE + s10_off
-    s11_off = cot_loop_entry_off + 0x74
     s11_va = VM_BASE + s11_off
 
     # 23. render.stripMarkdownFormatting -> collapse "\n\n\n" to "\n\n" (single blank line between CoT paragraphs)
@@ -887,7 +919,7 @@ def _resolve_cot_sites(
         ),
         PatchSite(
             domain="cot-rendering",
-            name="render.stepContent -> omit 2-space leading indent on CoT body paragraphs",
+            name=f"{cot_fn} -> omit 2-space leading indent on CoT body paragraphs",
             va=s10_va,
             offset=s10_off,
             original=bytes.fromhex("e2037fb2"),
@@ -895,7 +927,7 @@ def _resolve_cot_sites(
         ),
         PatchSite(
             domain="cot-rendering",
-            name="render.stepContent -> style CoT body paragraphs with Faint + Italic (\\x1b[2;3m)",
+            name=f"{cot_fn} -> style CoT body paragraphs with Faint + Italic (\\x1b[2;3m)",
             va=s11_va,
             offset=s11_off,
             original=bytes.fromhex("580180d2d044c1acb04481acd044c1acb04481ac180700d178ffffb5d90040f9b90000f9"),
@@ -2479,7 +2511,7 @@ THOUGHT_MARK = "∴ ".encode()
 
 
 def _resolve_thinking_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
-    """Sites #51a-#51f: the running thought in the conversation, `∴ ` before it, and `Thinking` below."""
+    """Sites #51a-#51g: the running thought in the conversation, `∴ ` before it, and `Thinking` below."""
     word = lambda o: struct.unpack_from("<I", data, o)[0]
     pack = lambda *ws: b"".join(struct.pack("<I", w) for w in ws)
     sites: list[PatchSite] = []
@@ -2565,6 +2597,20 @@ def _resolve_thinking_sites(data: bytes | bytearray, funcs: dict[str, tuple[int,
         raise RuntimeError(f"activityCandidate: expected one Thinking test, found {len(three)}")
     site("pending-line", "model.(*ConversationModel).activityCandidate -> Thinking shows its label, not the thought",
          three[0], NOP)
+
+    # 51g. v1.5.9+ added render.isInFlightThinkingOnly: when showThinking is false (stubbed), itemRenderer.render
+    # suppresses any running step that has thought without an answer yet, hiding both #51 and #53 until
+    # the answer starts. Return false at entry (`mov x0, xzr; ret`) so running thoughts render live.
+    if "isInFlightThinkingOnly" in funcs:
+        inf = funcs["isInFlightThinkingOnly"][0]
+        answer_no = bytes.fromhex("e0031faac0035fd6")
+        head = bytes(data[inf : inf + 8])
+        if head != answer_no and head[:4] != bytes.fromhex("900b40f9"):  # ldr x16, [x28, #0x10]
+            raise RuntimeError("isInFlightThinkingOnly no longer opens with its stack check")
+        site("cot-rendering", "render.isInFlightThinkingOnly -> false (keep live thoughts visible while running)",
+             inf, answer_no)
+    elif "thoughtBodyRows" in funcs:
+        raise RuntimeError("v1.5.9+ binary is missing render.isInFlightThinkingOnly; check itemRenderer.render")
     return tuple(sites)
 
 
@@ -2826,23 +2872,45 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
     full, live = branch_target(word(gate - 4), gate - 4), gate + 4
 
     # The full branch: `cbz x10; cbnz x8; ...; cmp w12, #1; b.ls bail; cmp w11, #8; b.eq bail;
-    # cmp w11, #0xb; b.eq bail` (running steps bail out), then the `low` test, which loads the verbosity's
-    # length: `add x27, sp, #0x18, lsl #12; ldr x11, [x27, #len]; cmp x11, #3`.
-    bails = [full + 0x20, full + 0x28, full + 0x30]
-    if word(full + 0x2C) != 0x71002D7F or len({branch_target(word(b), b) for b in bails}) != 1:
+    # cmp w11, #0xb; b.eq bail` (out-of-line bail in v1.5.8) or `cmp w11, #0xb; b.ne after_bail`
+    # falling through into inline `bail` at `full + 0x34` (v1.5.9+), then the `low` test, which
+    # loads the verbosity's length: `add x27, ...; ldr x11, [x27, #len]; cmp x11, #3`.
+    if word(full + 0x2C) != 0x71002D7F or word(full + 0x20) & 0xFF00001F != 0x54000009 \
+            or word(full + 0x28) & 0xFF00001F != 0x54000000:
+        raise RuntimeError("stepContent: the full CoT branch no longer bails out of running steps as expected")
+    bail = branch_target(word(full + 0x20), full + 0x20)
+    if branch_target(word(full + 0x28), full + 0x28) != bail:
         raise RuntimeError("stepContent: the full CoT branch no longer bails out of running steps in one place")
-    bail = branch_target(word(bails[0]), bails[0])
-    if word(full + 0x3C) != 0xF1000D7F or word(full + 0x38) & 0xFFC003FF != 0xF940036B:
+    if word(full + 0x30) & 0xFF00001F == 0x54000000 and branch_target(word(full + 0x30), full + 0x30) == bail:
+        bails = [full + 0x20, full + 0x28, full + 0x30]
+        after_bail = full + 0x34
+    elif word(full + 0x30) & 0xFF00001F == 0x54000001 and bail == full + 0x34:
+        bails = [full + 0x20, full + 0x28]
+        after_bail = branch_target(word(full + 0x30), full + 0x30)
+        if after_bail < bail + 0x14:
+            raise RuntimeError("stepContent: inline running-step bail-out is too small for Site #53c")
+    else:
+        raise RuntimeError("stepContent: the full CoT branch no longer bails out of running steps in one place")
+    if word(after_bail + 0x8) != 0xF1000D7F or word(after_bail + 0x4) & 0xFFC003FF != 0xF940036B:
         raise RuntimeError("stepContent: the full CoT branch no longer loads the verbosity")
-    verb_len = (word(full + 0x34), word(full + 0x38))  # x11 = len(verbosity)
+    verb_len = (word(after_bail), word(after_bail + 0x4))  # x11 = len(verbosity)
     is_high = 0xF100117F  # cmp x11, #4
     if {s for o in range(sc[0], sc[1], 4) if (s := branch_target(word(o), o)) is not None and bail <= s < bail + 0x14} != {bail} \
             or [o for o in range(sc[0], sc[1], 4) if branch_target(word(o), o) == bail] != bails:
         raise RuntimeError("stepContent: the running-step bail-out is reached from elsewhere")
 
+    # The collapsed path, where Site #8's `tbz w3, #0` sends an item that is not expanded. Its first 0x64
+    # bytes build the header's `Sprintf` arguments; they become the verbosity tests and the new header.
+    s8 = find_unique_anchor(data, sc, bytes.fromhex("e20300aa04000014e10f40b2"), "Site 8 (stepContent expanded CoT check)") + 0x10
+    if word(s8) & 0xFFF8001F != 0x36000003:
+        raise RuntimeError("stepContent: the expanded test is no longer `tbz w3, #0` (an old patch with Site #8?)")
+    span, expanded = branch_target(word(s8), s8), s8 + 4
+
     # The block: `bl strings.Join` (the body, "\n"), then `add x27; ldr x2, [x27, #hlen]; adrp x3; add x3;
     # orr x4, xzr, #1; mov x5, x0; mov x6, x1; mov x0, xzr; add x27; ldr x1, [x27, #hptr]; bl concatstring3`.
-    joins = [o for o in _calls_to(data, sc, funcs["stringsJoin"][0])
+    # Searched from s8..sc[1] to avoid the live expanded path's own join before s8 (v1.5.9+) while still
+    # finding the out-of-line CoT body loop past span (v1.5.8).
+    joins = [o for o in _calls_to(data, (s8, sc[1]), funcs["stringsJoin"][0])
              if branch_target(word(o + 0x2C), o + 0x2C) == funcs["concatstring3"][0]]
     if len(joins) != 1:
         raise RuntimeError(f"stepContent: expected one `header + \"\\n\" + body`, found {len(joins)}")
@@ -2858,18 +2926,12 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
     # The header is stored once: `add x27, ...; str x0, [x27, #hptr]; add x27, ...; str x1, [x27, #hlen]`;
     # the body code follows it.
     st_ptr, st_len = (hptr & ~0x1F & ~0x00400000) | 0, (hlen & ~0x1F & ~0x00400000) | 1
-    stores = [o for o, w in _words(data, (sc[0], sc[1] - 12))
+    stores = [o for o, w in _words(data, (s8, span - 12))
               if w == st_ptr and word(o - 4) == word(j + 0x24) and word(o + 8) == st_len and word(o + 4) == word(j + 0x04)]
     if len(stores) != 1:
         raise RuntimeError(f"stepContent: expected one store of the CoT header, found {len(stores)}")
     body = stores[0] + 12
 
-    # The collapsed path, where Site #8's `tbz w3, #0` sends an item that is not expanded. Its first 0x64
-    # bytes build the header's `Sprintf` arguments; they become the verbosity tests and the new header.
-    s8 = find_unique_anchor(data, sc, bytes.fromhex("e20300aa04000014e10f40b2"), "Site 8 (stepContent expanded CoT check)") + 0x10
-    if word(s8) & 0xFFF8001F != 0x36000003:
-        raise RuntimeError("stepContent: the expanded test is no longer `tbz w3, #0` (an old patch with Site #8?)")
-    span, expanded = branch_target(word(s8), s8), s8 + 4
     hdr_call = span + 0x64
     if not (calls(hdr_call, "fmtSprintf") or calls(hdr_call, "concatstring2")) or not calls(span + 0xB4, "styleRender"):
         raise RuntimeError("stepContent: the collapsed CoT header is no longer `Render(Sprintf(...))`")
