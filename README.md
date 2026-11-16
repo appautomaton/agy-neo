@@ -113,7 +113,7 @@ changing it. Delete the previous version's `.orig` once the new one is verified.
 | [`capture_prompt.py`](./capture_prompt.py), [`prompt_templates.py`](./prompt_templates.py) | Record the exact prompt `agy` sends, and check and edit its templates against the binary. |
 | [`templates/v<ver>/`](./templates/v1.5.9/README.md) | The templates we change in one release, each with its reason and the digest of Google's original. Google's own text stays local (`stock/`, git-ignored). |
 | [`hub-wrapper.sh`](./hub-wrapper.sh) | The wrapper installed as `~/.gemini/bin/agy`: gateway routing, the VS Code `--hub`, the cache relay. |
-| [`cache_relay.py`](./cache_relay.py), [`statusline.sh`](./statusline.sh) | The prompt cache keepalive, and the status line that drives and shows it. |
+| [`agy-neo.conf`](./agy-neo.conf), [`cache_relay.py`](./cache_relay.py), [`statusline.sh`](./statusline.sh) | The prompt cache keepalive policy (`~/.gemini/antigravity-cli/agy-neo.conf`), its loopback relay, and the status line that drives and shows it. |
 | [`consult_gemini_mcp.py`](./consult_gemini_mcp.py) | An MCP server that lets Claude Code consult Gemini through one shared `agy acp` process. |
 | [`assets/`](./assets) | The README's picture, drawn by `make_hero.py` from the patch's own frames and colors. |
 | [`diagnostics/`](./diagnostics) | Investigations and probes kept for reference: upstream 400s, cache lifetime. |

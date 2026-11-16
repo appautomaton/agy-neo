@@ -12,21 +12,25 @@ writes into systemInstruction (".../brain/<id>"), and records the time in
 /tmp/agy_cache_<id>.dat as "ANCHOR_TS TOUCHES STATUS". Title and safety calls carry
 no brain path and are ignored.
 
-statusline.sh reads that file for the cache countdown and, shortly before the
-5-minute implicit-cache TTL lapses, POSTs /_touch/<id>. The relay then replays
-the last body with a fresh requestId, reads the first SSE event (prefill done,
-cache touched), and closes the stream. It stops after MAX_TOUCHES idle replays or
+statusline.sh reads that file for the cache countdown and, at CACHE_REFRESH_AT
+(4m30s by default, 30s before the 5-minute implicit-cache TTL lapses), POSTs
+/_touch/<id>. Policy lives in ~/.gemini/antigravity-cli/agy-neo.conf (overridden
+by AGY_CACHE_* env vars) and reloads on mtime change. The relay replays the last
+body with a fresh requestId, reads the first SSE event (prefill done, cache
+touched), and closes the stream. It stops after CACHE_MAX_TOUCHES idle replays or
 any failure, until the next request upstream accepts resets it.
 
 The relay prints its port on stdout, then exits when the --parent process does.
 The relay never initiates a touch on its own.
 """
 import argparse
+from dataclasses import dataclass
 import fcntl
 import glob
 import http.client
 import json
 import os
+from pathlib import Path
 import re
 import sys
 import threading
@@ -37,8 +41,71 @@ from urllib.parse import urlsplit
 
 CLOUD_CODE = "https://daily-cloudcode-pa.googleapis.com"
 gemini_upstream: str | None = None
-MAX_TOUCHES = 4
-KEEPALIVE_MODELS = ("argon", "carbon", "hydrogen")  # 1M-window Gemini 4 families
+DEFAULT_MAX_TOUCHES = 4
+DEFAULT_MODELS = ("argon", "carbon", "hydrogen")  # 1M-window Gemini 4 families
+DEFAULT_CONF_PATH = Path.home() / ".gemini/antigravity-cli/agy-neo.conf"
+FALSE_VALUES = {"0", "false", "off", "no"}
+
+
+@dataclass(frozen=True)
+class RelayPolicy:
+    keepalive: bool = True
+    max_touches: int = DEFAULT_MAX_TOUCHES
+    models: tuple[str, ...] = DEFAULT_MODELS
+
+
+_conf_cache: tuple[Path, int | None, dict[str, str]] = (DEFAULT_CONF_PATH, None, {})
+_conf_lock = threading.Lock()
+
+
+def _parse_conf(text: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key, val = key.strip(), val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+            val = val[1:-1]
+        else:
+            val = re.sub(r"\s+#.*$", "", val)
+        values[key] = val
+    return values
+
+
+def get_policy() -> RelayPolicy:
+    """Load policy from agy-neo.conf (cached by mtime) with AGY_CACHE_* env overrides."""
+    global _conf_cache
+    path = Path(os.environ.get("AGY_NEO_CONFIG") or DEFAULT_CONF_PATH)
+    try:
+        mtime_ns: int | None = path.stat().st_mtime_ns
+    except OSError:
+        mtime_ns = None
+    with _conf_lock:
+        cached_path, cached_mtime, file_vals = _conf_cache
+        if path != cached_path or mtime_ns != cached_mtime:
+            try:
+                file_vals = _parse_conf(path.read_text()) if mtime_ns is not None else {}
+            except OSError:
+                file_vals = {}
+            _conf_cache = (path, mtime_ns, file_vals)
+
+    def pick(env_key: str, conf_key: str, default: str) -> str:
+        env_val = os.environ.get(env_key)
+        if env_val is not None and env_val != "":
+            return env_val.strip()
+        conf_val = file_vals.get(conf_key)
+        return conf_val if conf_val is not None and conf_val != "" else default
+
+    keepalive = pick("AGY_CACHE_KEEPALIVE", "CACHE_KEEPALIVE", "on").lower() not in FALSE_VALUES
+    try:
+        max_touches = max(0, int(pick("AGY_CACHE_MAX_TOUCHES", "CACHE_MAX_TOUCHES", str(DEFAULT_MAX_TOUCHES))))
+    except ValueError:
+        max_touches = DEFAULT_MAX_TOUCHES
+    models_raw = pick("AGY_CACHE_MODELS", "CACHE_MODELS", ",".join(DEFAULT_MODELS))
+    models = tuple(m.strip().lower() for m in models_raw.split(",") if m.strip())
+    return RelayPolicy(keepalive=keepalive, max_touches=max_touches, models=models)
 LOG_PATH = "/tmp/agy_cache_relay.log"
 LOG_KEEP = 200  # ~30KB
 SESSION_RE = re.compile(r"brain/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f])")
@@ -151,6 +218,9 @@ def with_fresh_request_id(body: bytes) -> bytes:
 
 
 def touch(sid: str) -> tuple[int, str]:
+    policy = get_policy()
+    if not policy.keepalive or policy.max_touches <= 0:
+        return 403, "keepalive disabled"
     with sessions_lock:
         entry = sessions.get(sid)
     if entry is None or entry["body"] is None:
@@ -161,7 +231,7 @@ def touch(sid: str) -> tuple[int, str]:
         with sessions_lock:
             if entry["inflight"]:
                 return 409, "turn in flight"
-            if entry["status"] != "live" or entry["touches"] >= MAX_TOUCHES:
+            if entry["status"] != "live" or entry["touches"] >= policy.max_touches:
                 return 429, f"{entry['status']} after {entry['touches']} touches"
             seq, origin, path, body = entry["seq"], entry["origin"], entry["path"], entry["body"]
             # Plain text, so the first SSE event is visible without decompressing.
@@ -253,10 +323,11 @@ class Relay(BaseHTTPRequestHandler):
                             if sid:
                                 log(f"turn {sid[:8]} {self.path.split('?')[0].rsplit('/', 1)[-1]} {shape}")
                         if sid:
-                            # Only KEEPALIVE_MODELS are worth keeping warm. The genai path names
-                            # the model; Cloud Code bodies carry it in "model".
-                            target = f"{self.path} {model}"
-                            warm = any(m in target for m in KEEPALIVE_MODELS)
+                            # Only configured CACHE_MODELS are worth keeping warm. The genai path
+                            # names the model; Cloud Code bodies carry it in "model".
+                            policy = get_policy()
+                            target = f"{self.path} {model}".lower()
+                            warm = any(m in target for m in policy.models)
                             status = "live" if warm and not compact else "off"
                             # Register the turn: touches wait for it, and one already
                             # waiting on its first event will not commit over it.

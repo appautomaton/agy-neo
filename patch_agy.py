@@ -183,6 +183,8 @@ def rendered_wrapper() -> bytes:
     return HUB_WRAPPER_SOURCE.read_bytes().replace(WRAPPER_REPO_MARK, str(REPO).encode())
 STATUSLINE_SOURCE = REPO / "statusline.sh"
 STATUSLINE_TARGET = HOME / ".gemini/antigravity-cli/statusline.sh"
+AGY_NEO_CONF_SOURCE = REPO / "agy-neo.conf"
+AGY_NEO_CONF_TARGET = HOME / ".gemini/antigravity-cli/agy-neo.conf"
 
 SETTINGS_PATH = HOME / ".gemini/antigravity-cli/settings.json"
 CACHE_DIR = REPO / ".cache"
@@ -3633,6 +3635,23 @@ def set_context_window(preset: str) -> None:
     print(f"[cfg]  Updated {SETTINGS_PATH}: contextWindow={preset!r}")
 
 
+def _read_neo_conf(path: pathlib.Path) -> dict[str, str]:
+    vals: dict[str, str] = {}
+    if not path.exists():
+        return vals
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = (p.strip() for p in line.split("=", 1))
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            v = v[1:-1]
+        else:
+            v = v.split(" #", 1)[0].split("\t#", 1)[0].rstrip()
+        vals[k] = v
+    return vals
+
+
 def print_status(binaries: list[pathlib.Path], verbose: bool = False) -> None:
     for path in binaries:
         state, sites = inspect_binary(path)
@@ -3645,6 +3664,17 @@ def print_status(binaries: list[pathlib.Path], verbose: bool = False) -> None:
     if SETTINGS_PATH.exists():
         settings = json.loads(SETTINGS_PATH.read_text())
         print(f"Settings : {SETTINGS_PATH} -> model={settings.get('model')!r}, contextWindow={settings.get('contextWindow')!r}")
+    conf_path = pathlib.Path(os.environ.get("AGY_NEO_CONFIG") or AGY_NEO_CONF_TARGET)
+    conf = _read_neo_conf(conf_path)
+    pick = lambda env_k, cfg_k, dflt: os.environ.get(env_k) or conf.get(cfg_k) or dflt
+    relay_cfg = os.environ.get("AGY_CACHE_RELAY")
+    relay_mode = relay_cfg if relay_cfg in ("off", "0", "false", "no") else (conf.get("CACHE_RELAY") or "on")
+    conf_label = str(conf_path) if conf_path.exists() else f"{conf_path} (defaults)"
+    print(
+        f"Cache    : {conf_label} -> relay={relay_mode}, keepalive={pick('AGY_CACHE_KEEPALIVE', 'CACHE_KEEPALIVE', 'on')}, "
+        f"refresh_at={pick('AGY_CACHE_REFRESH_AT', 'CACHE_REFRESH_AT', '4m30s')}, ttl={pick('AGY_CACHE_TTL', 'CACHE_TTL', '5m')}, "
+        f"max_touches={pick('AGY_CACHE_MAX_TOUCHES', 'CACHE_MAX_TOUCHES', '4')}, min_tokens={pick('AGY_CACHE_MIN_TOKENS', 'CACHE_MIN_TOKENS', '32000')}"
+    )
     env_override = os.environ.get("AGY_CLI_AUTO_COMPACT_OVERRIDE")
     print(f"Env Var  : AGY_CLI_AUTO_COMPACT_OVERRIDE={env_override!r}")
 
@@ -3678,10 +3708,17 @@ def main() -> int:
         if STATUSLINE_SOURCE.exists() and (
             not STATUSLINE_TARGET.exists() or STATUSLINE_SOURCE.read_bytes() != STATUSLINE_TARGET.read_bytes()
         ):
+            STATUSLINE_TARGET.parent.mkdir(parents=True, exist_ok=True)
             tmp_sl = STATUSLINE_TARGET.with_suffix(".sh.tmp")
             shutil.copy2(STATUSLINE_SOURCE, tmp_sl)
             tmp_sl.replace(STATUSLINE_TARGET)
             print(f"[sync] Atomically synced {STATUSLINE_SOURCE} -> {STATUSLINE_TARGET}")
+        if AGY_NEO_CONF_SOURCE.exists() and not AGY_NEO_CONF_TARGET.exists():
+            AGY_NEO_CONF_TARGET.parent.mkdir(parents=True, exist_ok=True)
+            tmp_cfg = AGY_NEO_CONF_TARGET.with_suffix(".conf.tmp")
+            shutil.copy2(AGY_NEO_CONF_SOURCE, tmp_cfg)
+            tmp_cfg.replace(AGY_NEO_CONF_TARGET)
+            print(f"[cfg]  Installed default config {AGY_NEO_CONF_SOURCE} -> {AGY_NEO_CONF_TARGET}")
     elif args.revert:
         for path in binaries:
             revert_patch(path)

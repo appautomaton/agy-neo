@@ -52,11 +52,16 @@ fi
 # Interactive and ACP sessions send Cloud Code traffic through a per-process loopback relay
 # that keeps an idle session's implicit prompt cache warm (cache_relay.py in this repo). Both read
 # CLOUD_CODE_URL. With modelProvider "gemini", GOOGLE_GEMINI_BASE_URL (CPA) is relayed too.
-# Print mode, other subcommands, AGY_CACHE_RELAY=off, and any relay failure use direct endpoints.
-# patch_agy.py --apply writes the repo's path here when it installs this file; the source keeps
-# the placeholder, so a copy installed by hand runs without the relay.
+# Print mode, other subcommands, CACHE_RELAY=off in agy-neo.conf (or AGY_CACHE_RELAY=off), and any
+# relay failure use direct endpoints. patch_agy.py --apply writes the repo's path here when it
+# installs this file; the source keeps the placeholder, so a copy installed by hand runs without
+# the relay.
+neo_conf=${AGY_NEO_CONFIG:-$HOME/.gemini/antigravity-cli/agy-neo.conf}
+CACHE_RELAY=on
+[[ -r $neo_conf ]] && source $neo_conf 2>/dev/null
+relay_gate=${AGY_CACHE_RELAY:-$CACHE_RELAY}
 relay_py=@AGY_NEO_REPO@/cache_relay.py
-if [[ "${AGY_CACHE_RELAY:-}" != off && -r $relay_py && ( $# -eq 0 || "$1" == -* || "$1" == "acp" ) ]] &&
+if [[ "${relay_gate:l}" != (0|false|off|no) && -r $relay_py && ( $# -eq 0 || "$1" == -* || "$1" == "acp" ) ]] &&
    (( ! ${argv[(I)(-p|--print|--prompt|--login|--help|-h)(|=*)]} )); then
   # A nested agy inherits its parent's relay as GOOGLE_GEMINI_BASE_URL; chain to the original.
   gemini_upstream=${GOOGLE_GEMINI_BASE_URL:-}

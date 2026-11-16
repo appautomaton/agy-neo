@@ -7,25 +7,27 @@ setopt PIPE_FAIL NO_UNSET
 zmodload zsh/datetime
 zmodload -F zsh/stat b:zstat
 
+[[ -z "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ]] && export LC_CTYPE="en_US.UTF-8"
 export LC_NUMERIC=C
 local NOW=$EPOCHREALTIME
 integer NOW_SEC=${EPOCHSECONDS:-${NOW%.*}}
 
 # ─── 1. Single-Pass jq Extraction (ASCII \x1f Unit Separator) ─────────────────
-local SESSION_ID STATE EXEC_MODE MODEL_NAME EFFORT CWD BRANCH DIRTY SBX_ON SBX_NET USED_PCT TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K COST_USD SUB_USD QUOTA_PCT SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING
+local SESSION_ID STATE CYCLE_MODE PERM_MODE MODEL_ID MODEL_DISPLAY EFFORT CWD BRANCH DIRTY SBX_ON USED_PCT TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K COST_USD SUB_USD QUOTA_PCT SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING
 
 jq -r '
   [
     (.session_id // .conversation_id // "default" | tostring),
     (.agent_state // "idle" | tostring),
-    (.execution_mode // .cycle_mode // "" | tostring),
-    (.model.id // .model.display_name // "Model" | tostring),
-    (.model.effort // "" | tostring),
+    (.cycle_mode // .execution_mode // "-" | tostring),
+    (.permission_mode // "-" | tostring),
+    (.model.id // "-" | tostring),
+    (.model.display_name // "-" | tostring),
+    (.model.effort // "-" | tostring),
     (.cwd // .workspace.current_dir // .workspace.project_dir // "" | tostring),
     (.vcs.branch // .vcs.client // "" | tostring),
     (if .vcs.dirty == true then "true" else "false" end),
     (if .sandbox.enabled == true then "true" else "false" end),
-    (if .sandbox.allow_network == true then "true" else "false" end),
     (
       ((.context_window.current_usage.input_tokens // 0 | tonumber? // 0) + (.context_window.current_usage.cache_read_input_tokens // 0 | tonumber? // 0)) as $real_in |
       (.context_window.context_window_size // 0 | tonumber? // 0) as $win_sz |
@@ -56,29 +58,43 @@ jq -r '
     (if .tool_confirmation_pending == true then "true" else "false" end)
   ] | map(tostring) | join("\u001f")
 ' 2>/dev/null | IFS=$'\x1f' read -r \
-  SESSION_ID STATE EXEC_MODE MODEL_NAME EFFORT CWD BRANCH DIRTY SBX_ON SBX_NET \
+  SESSION_ID STATE CYCLE_MODE PERM_MODE MODEL_ID MODEL_DISPLAY EFFORT CWD BRANCH DIRTY SBX_ON \
   USED_PCT TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K \
   COST_USD SUB_USD QUOTA_PCT \
   SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING || exit 0
 
 [[ -z "${SESSION_ID:-}" ]] && exit 0
+[[ "$CYCLE_MODE" == "-" ]]    && CYCLE_MODE=""
+[[ "$PERM_MODE" == "-" ]]     && PERM_MODE=""
+[[ "$MODEL_ID" == "-" ]]      && MODEL_ID=""
+[[ "$MODEL_DISPLAY" == "-" ]] && MODEL_DISPLAY=""
+[[ "$EFFORT" == "-" ]]        && EFFORT=""
 
-# ─── 2. Stateful TPS, Cache TTL & Response Model Engine ───────────────────────
+# Upstream StatusLineData omits settings.toolPermission; read it in-process (0 forks).
+if [[ -z "$PERM_MODE" ]]; then
+  local SETTINGS_FILE="${HOME}/.gemini/antigravity-cli/settings.json"
+  if [[ -r "$SETTINGS_FILE" ]]; then
+    local _SLINE=""
+    while IFS= read -r _SLINE; do
+      if [[ "$_SLINE" == *'"toolPermission"'* && "$_SLINE" =~ '"toolPermission"[[:space:]]*:[[:space:]]*"([^"]+)"' ]]; then
+        PERM_MODE="${match[1]}"
+        break
+      fi
+    done < "$SETTINGS_FILE"
+  fi
+fi
+
+# ─── 2. Stateful TPS & Cache TTL Engine ───────────────────────────────────────
 local STATE_FILE="/tmp/agy_telemetry_${SESSION_ID//[^a-zA-Z0-9_-]/_}.dat"
 local CONV_DB="${HOME}/.gemini/antigravity-cli/conversations/${SESSION_ID}.db"
-local CUR_MODEL_KEY="${MODEL_NAME// /_}"
-local PREV_STATE="idle" START_TIME=$NOW BASE_OUT=$TOT_OUT LAST_TPS="--" STEP_LAT="--" LAST_DELTA=0 RESP_MODEL="" PREV_MODEL_KEY="" CACHE_TS=0
+local PREV_STATE="idle" START_TIME=$NOW BASE_OUT=$TOT_OUT LAST_TPS="--" STEP_LAT="--" LAST_DELTA=0 _LEGACY_MODEL="" _LEGACY_KEY="" CACHE_TS=0
 
 if [[ -f "$STATE_FILE" ]]; then
-  read -r PREV_STATE START_TIME BASE_OUT LAST_TPS STEP_LAT LAST_DELTA RESP_MODEL PREV_MODEL_KEY CACHE_TS < "$STATE_FILE" 2>/dev/null || true
+  read -r PREV_STATE START_TIME BASE_OUT LAST_TPS STEP_LAT LAST_DELTA _LEGACY_MODEL _LEGACY_KEY CACHE_TS < "$STATE_FILE" 2>/dev/null || true
   [[ "$START_TIME" == <->* ]]      || START_TIME=$NOW
   [[ "$BASE_OUT" == <-> ]]         || BASE_OUT=$TOT_OUT
   [[ "$LAST_DELTA" == <-> ]]       || LAST_DELTA=0
   [[ "${CACHE_TS:-}" == <-> ]]     || CACHE_TS=0
-  [[ "$RESP_MODEL" == "-" ]]       && RESP_MODEL=""
-  if [[ -n "$PREV_MODEL_KEY" && "$PREV_MODEL_KEY" != "$CUR_MODEL_KEY" ]]; then
-    RESP_MODEL=""
-  fi
 else
   # Avoid counting historical session tokens as a single-step delta on cold start
   BASE_OUT=$TOT_OUT
@@ -136,40 +152,13 @@ fi
 # or tool run counts down truthfully instead of being reset on every non-idle tick.
 local RELAY_FILE="/tmp/agy_cache_${SESSION_ID//[^a-zA-Z0-9_-]/_}.dat"
 local RELAY_TS=0 RELAY_TOUCHES=0 RELAY_STATUS=""
-if [[ -n "${AGY_CACHE_RELAY:-}" && -r "$RELAY_FILE" ]]; then
+if [[ "${AGY_CACHE_RELAY:-}" == http://* && -r "$RELAY_FILE" ]]; then
   read -r RELAY_TS RELAY_TOUCHES RELAY_STATUS < "$RELAY_FILE" 2>/dev/null || true
   [[ "$RELAY_TS" == <-> ]] && (( RELAY_TS > 0 )) && CACHE_TS=$RELAY_TS
   [[ "$RELAY_TOUCHES" == <-> ]] || RELAY_TOUCHES=0
 fi
 
-# Refresh exact upstream response model (.1.19 ResponseModelFull) on new turn completion or cache miss
-if (( DELTA_OUT > 0 )) || [[ -z "$RESP_MODEL" && $TOT_OUT -gt 0 ]]; then
-  if [[ -r "$CONV_DB" ]]; then
-    local DB_MODEL
-    DB_MODEL=$(/usr/bin/sqlite3 "$CONV_DB" "
-      SELECT CAST(
-        substr(
-          tail,
-          instr(tail, X'9A01') + 3,
-          CASE
-            WHEN instr(substr(tail, instr(tail, X'9A01') + 3), X'A201') > 0
-            THEN instr(substr(tail, instr(tail, X'9A01') + 3), X'A201') - 1
-            ELSE instr(substr(tail, instr(tail, X'9A01') + 3), X'AA01') - 1
-          END
-        ) AS TEXT
-      )
-      FROM (
-        SELECT substr(data, -600) AS tail
-        FROM gen_metadata
-        WHERE instr(substr(data, -600), X'9A01') > 0
-        ORDER BY idx DESC LIMIT 1
-      );
-    " 2>/dev/null) || true
-    [[ -n "$DB_MODEL" ]] && RESP_MODEL="$DB_MODEL"
-  fi
-fi
-
-print -r -- "$STATE $START_TIME $BASE_OUT $LAST_TPS $STEP_LAT $LAST_DELTA ${RESP_MODEL:--} $CUR_MODEL_KEY $CACHE_TS" >| "$STATE_FILE" 2>/dev/null || true
+print -r -- "$STATE $START_TIME $BASE_OUT $LAST_TPS $STEP_LAT $LAST_DELTA - - $CACHE_TS" >| "$STATE_FILE" 2>/dev/null || true
 
 # ─── 3. Adaptive Dark/Light Mode Detection (5s Cache TTL) ─────────────────────
 local THEME_MODE="${AGY_THEME:-}"
@@ -237,14 +226,18 @@ local FG_INK=$'\033[38;2;'"${P_INK}m"
 
 # Nerd Font v3 Powerline & BMP Glyphs (Zero Emojis)
 local PL_RIGHT=$'\ue0b0'      # nf-pl-left_hard_divider ()
-local NF_ALERT=$'\uf071'      # nf-fa-warning
+local NF_ALERT=$'\uf071'      # nf-fa-warning (Confirmation pending)
+local NF_COMPASS=$'\uf14e'    # nf-fa-compass (Plan: read-only)
+local NF_BAN=$'\uf05e'        # nf-fa-ban (Strict: ask on every tool)
+local NF_ASK=$'\uf059'        # nf-fa-question_circle (Default request-review)
+local NF_EDIT=$'\uf040'       # nf-fa-pencil (Accept-edits)
+local NF_AUTO=$'\uf04b'       # nf-fa-play (Auto / proceed-in-sandbox)
+local NF_TURBO=$'\uf04e'      # nf-fa-forward (Always-proceed)
+local NF_FORK=$'\uf126'       # nf-fa-code_fork (Best-of-N)
 local NF_BRANCH=$'\ue0a0'     # nf-pl-branch
 local NF_WORKTREE=$'\uf1bb'   # nf-fa-tree (Linked Git worktree)
-local NF_SHIELD=$'\uf132'     # nf-fa-shield (Sandbox ON)
-local NF_GLOBE=$'\uf0ac'      # nf-fa-globe (Sandbox + Network)
-local NF_UNLOCK=$'\uf09c'     # nf-fa-unlock (Sandbox OFF)
 local NF_BOLT=$'\uf0e7'       # nf-fa-bolt (TPS)
-local NF_CLOCK=$'\uf017'      # nf-fa-clock_o (Turn elapsed time)
+local NF_CLOCK=$'\uf017'      # nf-fa-clock_o (Cache TTL)
 local NF_CHIP=$'\uf2db'       # nf-fa-microchip (Context window)
 local NF_DB=$'\uf1c0'         # nf-fa-database (Prompt cache)
 local NF_SUB=$'\uf0e8'        # nf-fa-sitemap (Subagents)
@@ -255,61 +248,88 @@ local NF_INBOX=$'\uf01c'      # nf-fa-inbox (Queued inputs)
 local -a SEG_BG=()
 local -a SEG_TXT=()
 
-# ─── 5. Atomic Block 1: Execution Mode (Pastel Mauve / Mint / Sky / Peach / Rose)
+# ─── 5. Atomic Block 1: Semantic Posture (Mode Glyph × Sandbox/Approval Color)
+# Shape encodes active mode (updates on every Shift+Tab); color encodes execution boundary:
+#   Sky = read-only plan | Mauve = human-gated host | Sapphire/Teal = sandboxed
+#   Mint = auto-edits (commands gated/sandboxed) | Peach = unsandboxed host auto-execution
 if [[ "$CONFIRM_PENDING" == "true" ]]; then
   SEG_BG+=("$P_ROSE")
-  SEG_TXT+=("${B}${NF_ALERT} ACT${NB}")
+  SEG_TXT+=("${B}${NF_ALERT}${NB}")
 fi
 
-if [[ -n "$EXEC_MODE" ]]; then
-  local MODE_BG="$P_MAUVE"
-  local MODE_TXT="$EXEC_MODE"
-  case "${EXEC_MODE:l}" in
-    default|request-review)
-      MODE_BG="$P_MAUVE"
-      MODE_TXT="ask"
-      ;;
-    *accept-edits*)
-      MODE_BG="$P_MINT"
-      MODE_TXT="edits"
-      ;;
-    *plan*)
-      MODE_BG="$P_SKY"
-      MODE_TXT="plan"
-      ;;
-    *auto*)
-      MODE_BG="$P_PEACH"
-      MODE_TXT="auto"
-      ;;
-    *yolo*)
-      MODE_BG="$P_ROSE"
-      MODE_TXT="yolo"
-      ;;
-  esac
-  SEG_BG+=("$MODE_BG")
-  SEG_TXT+=("$MODE_TXT")
-fi
+local MODE_GLYPH="$NF_ASK"
+local MODE_BG="$P_MAUVE"
+local CM="${CYCLE_MODE:l}" PM="${PERM_MODE:l}"
 
-# ─── 6. Atomic Block 2: Exact Upstream Response Model (Pastel Lavender) ───────
-local MODEL_SLUG="${${MODEL_NAME%% · *}%% \(*\)}"
-MODEL_SLUG="${${MODEL_SLUG:l}// /-}"
-local MODEL_TXT="${B}${RESP_MODEL:-$MODEL_SLUG}${NB}"
-SEG_BG+=("$P_LAVENDER")
-SEG_TXT+=("$MODEL_TXT")
-
-# ─── 7. Atomic Block 3: Sandbox Shield (Pastel Sapphire / Peach / Rose) ───────
-if [[ "$SBX_ON" == "true" ]]; then
-  if [[ "$SBX_NET" == "true" ]]; then
-    SEG_BG+=("$P_PEACH")
-    SEG_TXT+=("${NF_GLOBE}")
-  else
-    SEG_BG+=("$P_SAPPHIRE")
-    SEG_TXT+=("${NF_SHIELD}")
-  fi
+if [[ "$CM" == *plan* ]]; then
+  MODE_GLYPH="$NF_COMPASS"
+  MODE_BG="$P_SKY"
+elif [[ "$PM" == strict ]]; then
+  MODE_GLYPH="$NF_BAN"
+  MODE_BG="$P_MAUVE"
+elif [[ "$CM" == bestn ]]; then
+  MODE_GLYPH="$NF_FORK"
+  [[ "$SBX_ON" == "true" ]] && MODE_BG="$P_TEAL" || MODE_BG="$P_PEACH"
+elif [[ "$CM" == *accept-edits* ]]; then
+  MODE_GLYPH="$NF_EDIT"
+  [[ "$SBX_ON" == "true" ]] && MODE_BG="$P_MINT" || MODE_BG="$P_PEACH"
+elif [[ "$CM" == *auto* ]]; then
+  MODE_GLYPH="$NF_AUTO"
+  [[ "$SBX_ON" == "true" ]] && MODE_BG="$P_TEAL" || MODE_BG="$P_PEACH"
+elif [[ "$PM" == always-proceed ]]; then
+  MODE_GLYPH="$NF_TURBO"
+  [[ "$SBX_ON" == "true" ]] && MODE_BG="$P_TEAL" || MODE_BG="$P_PEACH"
+elif [[ "$PM" == proceed-in-sandbox ]]; then
+  MODE_GLYPH="$NF_AUTO"
+  [[ "$SBX_ON" == "true" ]] && MODE_BG="$P_TEAL" || MODE_BG="$P_MAUVE"
 else
-  SEG_BG+=("$P_ROSE")
-  SEG_TXT+=("${NF_UNLOCK}")
+  MODE_GLYPH="$NF_ASK"
+  [[ "$SBX_ON" == "true" ]] && MODE_BG="$P_SAPPHIRE" || MODE_BG="$P_MAUVE"
 fi
+SEG_BG+=("$MODE_BG")
+SEG_TXT+=("$MODE_GLYPH")
+
+# ─── 6. Atomic Block 2: Selected Model + Thinking Effort (Pastel Lavender) ────
+# Periodic-table shorthand for Gemini 4 families: Carbon -> C, Argon -> Ar, Hydrogen -> H,
+# paired with low | med | high | xhigh (e.g. C-med, Ar-high, H-xhigh).
+local MODEL_PROBE="${MODEL_ID:l} ${MODEL_DISPLAY:l}"
+local MODEL_ABBR=""
+case "$MODEL_PROBE" in
+  *carbon*)   MODEL_ABBR="C" ;;
+  *argon*)    MODEL_ABBR="Ar" ;;
+  *hydrogen*) MODEL_ABBR="H" ;;
+  *)
+    local RAW_M="${MODEL_ID:-${MODEL_DISPLAY:-Model}}"
+    RAW_M="${${RAW_M%% · *}%% \(*\)}"
+    RAW_M="${${RAW_M:l}// /-}"
+    RAW_M="${RAW_M#models/}"
+    RAW_M="${RAW_M#gemini-}"
+    if [[ "$RAW_M" =~ '^(.*)-(xhigh|high|medium|med|low)$' ]]; then
+      RAW_M="${match[1]}"
+    fi
+    MODEL_ABBR="${RAW_M:-model}"
+    ;;
+esac
+
+local EFF_RAW="${EFFORT:l}"
+if [[ -z "$EFF_RAW" && "${MODEL_DISPLAY:l}" =~ '\((xhigh|high|medium|med|low)\)' ]]; then
+  EFF_RAW="${match[1]}"
+elif [[ -z "$EFF_RAW" && "${MODEL_ID:l}" =~ '-(xhigh|high|medium|med|low)$' ]]; then
+  EFF_RAW="${match[1]}"
+fi
+
+local EFF_ABBR=""
+case "$EFF_RAW" in
+  xhigh)      EFF_ABBR="xhigh" ;;
+  high)       EFF_ABBR="high" ;;
+  medium|med) EFF_ABBR="med" ;;
+  low)        EFF_ABBR="low" ;;
+esac
+
+local MODEL_LABEL="$MODEL_ABBR"
+[[ -n "$EFF_ABBR" ]] && MODEL_LABEL+="-${EFF_ABBR}"
+SEG_BG+=("$P_LAVENDER")
+SEG_TXT+=("${B}${MODEL_LABEL}${NB}")
 
 # ─── 8. Optional Block: VCS Branch & Worktree (Pastel Sky / Rose when dirty) ──
 # Upstream agy's store.detectVCSOnDisk (0x102d629b0) only sets .vcs.type="git"
@@ -408,34 +428,87 @@ integer CACHE_PCT=$(( TOT_PROMPT > 0 ? (CACHE_READ * 100 / TOT_PROMPT) : 0 ))
 SEG_BG+=("$P_PEACH")
 SEG_TXT+=("${NF_DB} ${B}${CACHE_PCT}%${NB}")
 
-# ─── 12. Atomic Block 7: Implicit Cache TTL Countdown (300s Window) ───────────
-# Empirical agy/Gemini implicit cache cliff is 5.0 min (300s).
-# Refreshes every 15s (0.25m) while idle: 5.0m -> 4.8m -> 4.5m -> 4.2m -> 4.0m...
-# >1.0m: Mint (Hot), 0.1..1.0m: Yellow (Expiring), <=0.0m: Rose (Cold).
+# ─── 12. Atomic Block 7: Implicit Cache TTL Countdown & Keepalive Policy ──────
+# Policy loads live from ~/.gemini/antigravity-cli/agy-neo.conf (with AGY_CACHE_* env overrides).
+# Empirical agy/Gemini implicit cache cliff is 5.0 min (300s); default touch fires at 4m30s (270s).
+parse_duration_sec() {
+  local raw="${${1:-}:l}" fallback="${2:-0}"
+  raw="${raw//[[:space:]]/}"
+  if [[ "$raw" == <-> ]]; then
+    REPLY=$raw
+  elif [[ "$raw" == <->s ]]; then
+    REPLY=${raw%s}
+  elif [[ "$raw" == <->(m|min) ]]; then
+    REPLY=$(( ${raw%%(m|min)} * 60 ))
+  elif [[ "$raw" == <->.<->(m|min) ]]; then
+    local num="${raw%%(m|min)}"
+    integer sec=$(( num * 60.0 + 0.5 ))
+    REPLY=$sec
+  elif [[ "$raw" == <->(m|min)<->(s|) ]]; then
+    local mins="${raw%%(m|min)*}" rest="${raw#*(m|min)}"
+    rest="${rest%s}"
+    REPLY=$(( mins * 60 + rest ))
+  else
+    REPLY=$fallback
+  fi
+}
+
+local NEO_CONF="${AGY_NEO_CONFIG:-${HOME}/.gemini/antigravity-cli/agy-neo.conf}"
+local CACHE_RELAY="on" CACHE_KEEPALIVE="on" CACHE_TTL="5m" CACHE_REFRESH_AT="4m30s"
+local CACHE_MAX_TOUCHES="4" CACHE_MIN_TOKENS="32000" CACHE_MODELS="argon,carbon,hydrogen"
+[[ -r "$NEO_CONF" ]] && source "$NEO_CONF" 2>/dev/null || true
+
+local KEEPALIVE_RAW="${AGY_CACHE_KEEPALIVE:-$CACHE_KEEPALIVE}"
+integer KEEPALIVE_ON=1
+[[ "${KEEPALIVE_RAW:l}" == (0|false|off|no) ]] && KEEPALIVE_ON=0
+
+integer REPLY=0
+parse_duration_sec "${AGY_CACHE_TTL:-$CACHE_TTL}" 300
+integer CACHE_TTL_SEC=$REPLY
+(( CACHE_TTL_SEC < 30 )) && CACHE_TTL_SEC=30
+
+parse_duration_sec "${AGY_CACHE_REFRESH_AT:-$CACHE_REFRESH_AT}" 270
+integer CACHE_REFRESH_AT_SEC=$REPLY
+(( CACHE_REFRESH_AT_SEC < 15 )) && CACHE_REFRESH_AT_SEC=15
+(( CACHE_REFRESH_AT_SEC > CACHE_TTL_SEC - 15 )) && CACHE_REFRESH_AT_SEC=$(( CACHE_TTL_SEC - 15 ))
+
+local MAX_TOUCHES_RAW="${AGY_CACHE_MAX_TOUCHES:-$CACHE_MAX_TOUCHES}"
+integer CACHE_MAX_TOUCHES_VAL=4
+[[ "$MAX_TOUCHES_RAW" == <-> ]] && CACHE_MAX_TOUCHES_VAL=$MAX_TOUCHES_RAW
+
+local MIN_TOKENS_RAW="${AGY_CACHE_MIN_TOKENS:-$CACHE_MIN_TOKENS}"
+integer CACHE_MIN_TOKENS_VAL=32000
+[[ "$MIN_TOKENS_RAW" == <-> ]] && CACHE_MIN_TOKENS_VAL=$MIN_TOKENS_RAW
+
 if (( CACHE_TS > 0 )); then
-  integer CACHE_REM=$(( 300 - (NOW_SEC - CACHE_TS) ))
-  # Keepalive: in the last 60s ask the relay to replay the last request, so touches land
-  # about every 4 minutes (the 15s tick adds up to 15s). Each costs a cache read of the
-  # prompt plus ~100 thought tokens; the relay serializes touches, caps them at 4 per
-  # idle stretch (~21 min of cover), and stops on any failure.
-  if [[ "$RELAY_STATUS" == live ]] && (( CACHE_REM > 0 && CACHE_REM <= 60 &&
-        TOT_PROMPT >= 32000 && RELAY_TOUCHES < 4 )); then
+  integer CACHE_ELAPSED=$(( NOW_SEC - CACHE_TS ))
+  integer CACHE_REM=$(( CACHE_TTL_SEC - CACHE_ELAPSED ))
+  # Keepalive: once CACHE_ELAPSED reaches CACHE_REFRESH_AT_SEC (default 4m30s, leaving a 15-30s
+  # buffer on the 15s idle tick before the 5m cliff), ask the relay to replay the last request.
+  # Each costs a cache read of the prompt plus ~100 thought tokens; the relay serializes touches,
+  # caps them at CACHE_MAX_TOUCHES_VAL per idle stretch, and stops on any failure.
+  if (( KEEPALIVE_ON )) && [[ "$RELAY_STATUS" == live && "${AGY_CACHE_RELAY:-}" == http://* ]] &&
+     (( CACHE_REM > 0 && CACHE_ELAPSED >= CACHE_REFRESH_AT_SEC &&
+        TOT_PROMPT >= CACHE_MIN_TOKENS_VAL && RELAY_TOUCHES < CACHE_MAX_TOUCHES_VAL )); then
     /usr/bin/curl -sS -m 120 -X POST "${AGY_CACHE_RELAY}/_touch/${SESSION_ID}" \
       </dev/null >/dev/null 2>&1 &!
   fi
-  # Keepalive marker: ↻ while armed, ↻n after n touches, ✗ once a touch has failed.
+  # Keepalive marker: ↻ while armed, ↻n after n touches, ✗ once a touch has failed; hidden when off.
   local KEEP_MARK=""
-  if [[ "$RELAY_STATUS" == fail ]]; then
-    KEEP_MARK=" ✗"
-  elif [[ "$RELAY_STATUS" == live ]] && (( RELAY_TOUCHES > 0 || TOT_PROMPT >= 32000 )); then
-    KEEP_MARK=" ↻"
-    (( RELAY_TOUCHES > 0 )) && KEEP_MARK+="$RELAY_TOUCHES"
+  if (( KEEPALIVE_ON )); then
+    if [[ "$RELAY_STATUS" == fail ]]; then
+      KEEP_MARK=" ✗"
+    elif [[ "$RELAY_STATUS" == live ]] && (( RELAY_TOUCHES > 0 || (CACHE_MAX_TOUCHES_VAL > 0 && TOT_PROMPT >= CACHE_MIN_TOKENS_VAL) )); then
+      KEEP_MARK=" ↻"
+      (( RELAY_TOUCHES > 0 )) && KEEP_MARK+="$RELAY_TOUCHES"
+    fi
   fi
   if (( CACHE_REM > 0 )); then
     float CACHE_MIN=$(( CACHE_REM / 60.0 ))
     local CACHE_FMT
     printf -v CACHE_FMT "%.1fm" $CACHE_MIN
-    if (( CACHE_REM > 60 )); then
+    integer WARN_SEC=$(( CACHE_TTL_SEC > 90 ? 60 : CACHE_TTL_SEC / 2 ))
+    if (( CACHE_REM > WARN_SEC )); then
       SEG_BG+=("$P_MINT")
     else
       SEG_BG+=("$P_YELLOW")
