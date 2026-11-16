@@ -8,51 +8,6 @@
  "config.applyFeatureProviderCheckpointOverrideConfig -> zero expCp.MaxTokenLimit": [
   "8db83f9833aba2f0"
  ],
- "defaultmodels.Gemini36Flash -> Gemini 4 Hydrogen info, efforts low-xhigh": [
-  "34e2cfc997ed9092"
- ],
- "defaultmodels.init: gemini-4-hydrogen-high in place of gemini-3.6-flash-high": [
-  "46bb35e1da0b4582"
- ],
- "defaultmodels.init: gemini-4-hydrogen-low in place of gemini-3.6-flash-low": [
-  "886b4173831c26f7"
- ],
- "defaultmodels.init: gemini-4-hydrogen-medium in place of gemini-3.6-flash-medium": [
-  "44015b6786732e85"
- ],
- "defaultmodels.init: gemini-4-hydrogen-xhigh in place of gemini-3.7-flash-low": [
-  "886b4173831c26f7"
- ],
- "geminimodels map: gemini-4-hydrogen-high -> gemini-4-hydrogen (in place of gemini-3.6-flash-high)": [
-  "fb87de9f1645d047"
- ],
- "geminimodels map: gemini-4-hydrogen-low -> gemini-4-hydrogen (in place of gemini-3.6-flash-low)": [
-  "e7dea914063c261b"
- ],
- "geminimodels map: gemini-4-hydrogen-medium -> gemini-4-hydrogen (in place of gemini-3.6-flash-medium)": [
-  "ac85243a0f1ae75a"
- ],
- "geminimodels map: gemini-4-hydrogen-xhigh -> gemini-4-hydrogen (in place of gemini-3.7-flash-low)": [
-  "e7dea914063c261b"
- ],
- "geminimodels.Catalog: gemini-4-hydrogen-high (Gemini 4 Hydrogen (High)) in place of gemini-3.6-flash-high": [
-  "5ac3a7272a2b8b9f"
- ],
- "geminimodels.Catalog: gemini-4-hydrogen-low (Gemini 4 Hydrogen (Low)) in place of gemini-3.6-flash-low": [
-  "81391f3eeed7cfb6"
- ],
- "geminimodels.Catalog: gemini-4-hydrogen-medium (Gemini 4 Hydrogen (Medium)) in place of gemini-3.6-flash-medium": [
-  "e9bb3f777e76242a"
- ],
- "geminimodels.Catalog: gemini-4-hydrogen-xhigh (Gemini 4 Hydrogen (XHigh)) in place of gemini-3.7-flash-low": [
-  "4718be77929cf326"
- ],
- "geminimodels.Catalog: order Hydrogen xhigh-low where its donors stood": [
-  "fa0bf2b1fd9698cd"
- ],
- "genairequest.toGenaiThinkingLevel -> name level 100 XHIGH, not EXTRA_HIGH": [
-  "f7cc6b974242f9c9"
- ],
  "halloween.init.0 -> Halloween is not registered (its logo rows hold the spinner frames)": [
   "c9ecc984c52e940d"
  ],
@@ -256,6 +211,9 @@
  ],
  "render.stepContent -> a running thought under `high`: the full block, else the live one-liner": [
   "d99c6a4d4d7f315e"
+ ],
+ "render.stepContent -> an expanded running thought uses the headerless full block": [
+  "1822be489bb36d69"
  ],
  "render.stepContent -> mutate CoT header `▾ Thought...` to `∴ Thought...`": [
   "d04e3cf1d7f67001"

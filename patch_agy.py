@@ -61,15 +61,6 @@ TARGET_SYMBOLS: dict[str, str] = {
     "getMaxTokensForStep": "google3/third_party/jetski/cortex/chatconverters/chatconverters.(*TrajectoryChatConverter).getMaxTokensForStep",
     "stepToMessage": "google3/third_party/oneharness/internal/core/serializers/serializers.DefaultSerializer.stepToMessage",
     "memequal": "runtime.memequal",
-    "geminiWireMap": "google3/third_party/jetski/models/geminimodels/geminimodels.map.init.0",
-    "geminiCatalog": "google3/third_party/jetski/models/geminimodels/geminimodels.Catalog",
-    "geminiDetails": "google3/third_party/jetski/models/geminimodels/geminimodels.details",
-    "defaultModelsInit": "google3/third_party/jetski/models/defaults/defaultmodels.init",
-    "gemini36Flash": "google3/third_party/jetski/models/defaults/defaultmodels.Gemini36Flash",
-    "gemini37Flash": "google3/third_party/jetski/models/defaults/defaultmodels.Gemini37Flash",
-    "geminiModelInfo": "google3/third_party/jetski/models/defaults/defaultmodels.GeminiModelInfo",
-    "unsupportedThinkingLevel": "google3/third_party/jetski/models/defaults/defaultmodels.unsupportedThinkingLevel",
-    "toGenaiThinkingLevel": "google3/third_party/jetski/model_api/backends/components/genairequest/genairequest.toGenaiThinkingLevel",
     "rendererStart": "google3/third_party/golang/charm_land/bubbletea/v/v2/tea.(*cursedRenderer).start",
     "rendererClose": "google3/third_party/golang/charm_land/bubbletea/v/v2/tea.(*cursedRenderer).close",
     "rendererFlush": "google3/third_party/golang/charm_land/bubbletea/v/v2/tea.(*cursedRenderer).flush",
@@ -138,26 +129,9 @@ OPTIONAL_SYMBOLS: dict[str, str] = {
     "isInFlightThinkingOnly": "google3/third_party/jetski/cli/render/render.isInFlightThinkingOnly",
 }
 
-# Sites #38-#40: the Gemini API wire model for Carbon, and the map entries that carry it. They retire
-# once upstream maps Carbon itself (v1.5.7), which frees their donor entries for Sites #55a-#55p.
-GEMINI_WIRE_MODEL = "gemini-4-carbon"
-GEMINI_WIRE_DONOR = "gemini-3.6-flash"  # CLIProxyAPI does not route it
-
 # 1M-window models that upstream `backend.ContextWindowSelectable` (["Gemini 4 Argon"]) omits. Sites
 # #1a-#2b admit every base name with this prefix (Carbon, Hydrogen); it must fit their 16-byte slot.
 CONTEXT_WINDOW_EXTRA_FAMILY = b"Gemini 4 "
-
-# Sites #55a-#55p: Gemini 4 Hydrogen as a built-in model, as Cloud Code's fetchAvailableModels serves it
-# under OAuth: `gemini-4-hydrogen-<effort>`, Model enum MODEL_PLACEHOLDER_M5xx (1000 + xx), thinking level.
-# Each effort takes the catalog slots of a Flash model CLIProxyAPI does not route.
-HYDROGEN_FAMILY = "Gemini 4 Hydrogen"
-HYDROGEN_WIRE_MODEL = "gemini-4-hydrogen"
-HYDROGEN_EFFORTS: dict[str, tuple[int, int, str, str]] = {  # effort: (thinking level, enum, label, donor ID)
-    "low": (1, 1527, "Gemini 4 Hydrogen (Low)", "gemini-3.6-flash-low"),
-    "medium": (2, 1526, "Gemini 4 Hydrogen (Medium)", "gemini-3.6-flash-medium"),
-    "high": (3, 1525, "Gemini 4 Hydrogen (High)", "gemini-3.6-flash-high"),
-    "xhigh": (100, 1528, "Gemini 4 Hydrogen (XHigh)", "gemini-3.7-flash-low"),
-}
 
 # Self-contained 140-byte ARM64 leaf resolver placed in store.(*Store).ModelMaxTokens.
 # The `ldr x6, [sp, #imm]` loads at +0x0 (for `store.BuildStatusLineData`: 0x338 in v1.5.0-v1.5.2, 0x348 in v1.5.3+)
@@ -305,7 +279,7 @@ def encode_b_eq(pc_va: int, target_va: int) -> bytes:
     return struct.pack("<I", 0x54000000 | (((delta // 4) & 0x7FFFF) << 5))
 
 
-COND_EQ, COND_LO, COND_HI = 0x0, 0x3, 0x8
+COND_LO = 0x3
 
 
 def encode_b_cond(pc_va: int, target_va: int, cond: int) -> bytes:
@@ -314,13 +288,6 @@ def encode_b_cond(pc_va: int, target_va: int, cond: int) -> bytes:
     if delta % 4 != 0:
         raise ValueError(f"Unaligned b.cond target: {hex(pc_va)} -> {hex(target_va)}")
     return struct.pack("<I", 0x54000000 | (((delta // 4) & 0x7FFFF) << 5) | cond)
-
-
-def encode_movz(rd: int, imm16: int) -> bytes:
-    """Encode `movz x<rd>, #imm16`."""
-    if not 0 <= imm16 < 1 << 16:
-        raise ValueError(f"movz immediate out of range: {imm16}")
-    return struct.pack("<I", 0xD2800000 | (imm16 << 5) | rd)
 
 
 def encode_tbz_w0_bit0(pc_va: int, target_va: int) -> bytes:
@@ -2844,7 +2811,7 @@ def _resolve_thought_grouping_sites(data: bytes | bytearray, funcs: dict[str, tu
 # ` (<first line>)`, fitted to the width minus the header, instead of the last paragraph. "Is verbosity
 # `high`" is a length test: the setting is one of `low`, `medium`, `high`.
 def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
-    """Sites #53a-#53d & #54a-#54i: the running thought grows under `high`; elsewhere a finished thought is one line."""
+    """Sites #53a-#53e & #54a-#54i: the running thought grows under `high` (or when expanded); elsewhere a finished thought is one line."""
     word = lambda o: struct.unpack_from("<I", data, o)[0]
     pack = lambda *ws: b"".join(struct.pack("<I", w) for w in ws)
     calls = lambda o, sym: word(o) >> 26 == 0x25 and branch_target(word(o), o) == funcs[sym][0]
@@ -2895,9 +2862,6 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
         raise RuntimeError("stepContent: the full CoT branch no longer loads the verbosity")
     verb_len = (word(after_bail), word(after_bail + 0x4))  # x11 = len(verbosity)
     is_high = 0xF100117F  # cmp x11, #4
-    if {s for o in range(sc[0], sc[1], 4) if (s := branch_target(word(o), o)) is not None and bail <= s < bail + 0x14} != {bail} \
-            or [o for o in range(sc[0], sc[1], 4) if branch_target(word(o), o) == bail] != bails:
-        raise RuntimeError("stepContent: the running-step bail-out is reached from elsewhere")
 
     # The collapsed path, where Site #8's `tbz w3, #0` sends an item that is not expanded. Its first 0x64
     # bytes build the header's `Sprintf` arguments; they become the verbosity tests and the new header.
@@ -2905,6 +2869,34 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
     if word(s8) & 0xFFF8001F != 0x36000003:
         raise RuntimeError("stepContent: the expanded test is no longer `tbz w3, #0` (an old patch with Site #8?)")
     span, expanded = branch_target(word(s8), s8), s8 + 4
+
+    # v1.5.9+ also tests `expanded` inside the live branch (`add x27, sp, ...; ldrb wR, [x27, #exp];
+    # tbz wR, #0, one_liner`) to show a `"▾ Thinking  (Ns)\n" + thoughtBodyRows` block on `ctrl+o`.
+    # Redirecting that expanded fall-through to `bail` (#53c) gives `ctrl+o` the same headerless growing
+    # block that `high` renders, closing in place with the `∴ Thought for ...` line (#53d).
+    if word(s8 - 8) & 0xFF8003FF != 0x910003FB or word(s8 - 4) & 0xFFC003E0 != 0x39400360:
+        raise RuntimeError("stepContent: the expanded flag is no longer loaded via `add x27, sp, ...; ldrb wR, [x27, ...]`")
+    exp_hi, exp_ld = word(s8 - 8), word(s8 - 4) & ~0x1F
+    live_exps = [
+        o + 12 for o, w in _words(data, (live, full - 12))
+        if w == exp_hi and (word(o + 4) & ~0x1F) == exp_ld
+        and (word(o + 8) & 0xFFF8001F) == (0x36000000 | (word(o + 4) & 0x1F))
+    ]
+    if "thoughtBodyRows" in funcs:
+        if len(live_exps) != 1:
+            raise RuntimeError(f"stepContent: expected one expanded check in the live CoT branch, found {len(live_exps)}")
+    elif live_exps:
+        raise RuntimeError("stepContent: unexpected expanded check in the live CoT branch without thoughtBodyRows")
+    live_exp = live_exps[0] if live_exps else None
+    if live_exp is not None and branch_target(word(live_exp), live_exp) != bail:
+        one_liner = branch_target(word(live_exp - 4), live_exp - 4)
+        if one_liner is None or one_liner <= live_exp or entered_from_outside(live_exp - 4, one_liner, sc):
+            raise RuntimeError("stepContent: the live expanded CoT branch is entered from elsewhere")
+
+    expected_bails = sorted([*bails, *(live_exps if live_exp is not None and branch_target(word(live_exp), live_exp) == bail else ())])
+    if {s for o in range(sc[0], sc[1], 4) if (s := branch_target(word(o), o)) is not None and bail <= s < bail + 0x14} != {bail} \
+            or [o for o in range(sc[0], sc[1], 4) if branch_target(word(o), o) == bail] != expected_bails:
+        raise RuntimeError("stepContent: the running-step bail-out is reached from elsewhere")
 
     # The block: `bl strings.Join` (the body, "\n"), then `add x27; ldr x2, [x27, #hlen]; adrp x3; add x3;
     # orr x4, xzr, #1; mov x5, x0; mov x6, x1; mov x0, xzr; add x27; ldr x1, [x27, #hptr]; bl concatstring3`.
@@ -2986,6 +2978,9 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
          pack(word(j + 0x24), st_ptr | 31, word(j + 0x04), st_len | 31) + encode_b(v(bail + 16), v(body)))
     site("render.stepContent -> the CoT block is body, then its `∴ Thought for` line", j + 0x08,
          pack(hlen, word(j + 0x0C), word(j + 0x10), word(j + 0x14), 0xAA0103E2, 0xAA0003E1, word(j + 0x20), word(j + 0x24), hptr))
+    if live_exp is not None:
+        site("render.stepContent -> an expanded running thought uses the headerless full block", live_exp,
+             encode_b(v(live_exp), v(bail)))
     site("render.stepContent -> a collapsed thought under `high` expands; else its header is `∴ <header>`", span, collapsed)
     site("render.stepContent -> the collapsed header's `Sprintf` becomes `concatstring2`", hdr_call,
          encode_bl(v(hdr_call), VM_BASE + funcs["concatstring2"][0]))
@@ -3048,129 +3043,6 @@ def _resolve_monitor_sites(data: bytes | bytearray) -> tuple[PatchSite, ...]:
     )
 
 
-def _gemini_wire_map(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[set[str], dict[str, dict]]:
-    """Every key of the `geminimodels` wire map, and the entries whose value operands decode.
-
-    Each entry starts with its key: `adrp x2; add x2, x2, #lo; mov x3, #len; bl mapassign_faststr`, then
-    sets its value length (`mov|orr xR, #len; str xR, [x0, #8]`) and pointer (`adrp x4; add x4; str x4, [x0]`).
-    Entries that encode their value length otherwise are keys only.
-    """
-    start, end = funcs["geminiWireMap"]
-
-    def word(off: int) -> int:
-        return struct.unpack_from("<I", data, off)[0]
-
-    def read_str(va: int, n: int) -> str:
-        return bytes(data[va - VM_BASE : va - VM_BASE + n]).decode("ascii", "replace")
-
-    key_offs = [
-        off
-        for off in range(start, end - 8, 4)
-        if (word(off) & 0x9F00001F) == 0x90000002
-        and (word(off + 4) & 0xFFC003FF) == 0x91000042
-        and (word(off + 8) & 0xFFE0001F) == 0xD2800003
-    ]
-    keys: set[str] = set()
-    entries: dict[str, dict] = {}
-    for i, k in enumerate(key_offs):
-        stop = key_offs[i + 1] if i + 1 < len(key_offs) else end
-        key_va, key_len = decode_adrp_add(data, k), (word(k + 8) >> 5) & 0xFFFF
-        key = read_str(key_va, key_len)
-        keys.add(key)
-        len_str = next((o for o in range(k + 12, stop, 4) if (word(o) & 0xFFFFFFE0) == 0xF9000400), None)
-        ptr = next(
-            (
-                o
-                for o in range(k + 12, stop - 8, 4)
-                if (word(o) & 0x9F00001F) == 0x90000004
-                and (word(o + 4) & 0xFFC003FF) == 0x91000084
-                and word(o + 8) == 0xF9000004
-            ),
-            None,
-        )
-        if len_str is None or ptr is None or ptr < len_str:
-            continue
-        len_insn = word(len_str - 4)
-        reg = word(len_str) & 0x1F
-        if (len_insn & 0xFFE0001F) == 0xD2800000 | reg:  # mov xR, #len
-            val_len = (len_insn >> 5) & 0xFFFF
-        elif len_insn == 0xB27C03E0 | reg:  # orr xR, xzr, #0x10
-            val_len = 16
-        else:
-            continue
-        val_va = decode_adrp_add(data, ptr)
-        entries[key] = {
-            "off": k, "key_va": key_va, "len_off": len_str - 4, "reg": reg,
-            "ptr_off": ptr, "val_va": val_va, "val_len": val_len, "value": read_str(val_va, val_len),
-        }
-    return keys, entries
-
-
-def _resolve_gemini_wire_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
-    """Sites #38-#40: map `gemini-4-carbon-{high,medium,low}` to the wire model `gemini-4-carbon`.
-
-    Under `modelProvider: "gemini"`, `geminimodels.MapModel` turns a picker ID into the model the
-    Gemini API request names (`gemini-4-argon-medium` -> `gemini-4-argon` + `thinkingLevel`). v1.5.5
-    added Carbon to `defaultmodels` only, so Carbon IDs reach CLIProxyAPI unmapped and fail with
-    `unknown provider`. Each site retargets one `gemini-3.6-flash-*` entry of the map, a model
-    CLIProxyAPI does not route, by rewriting operands only: key pointer and length, value pointer
-    and length. The value is the 15-byte prefix of the Carbon key itself, which also marks an entry
-    as ours. Once upstream maps Carbon itself (v1.5.7, with a value length these sites do not decode),
-    they retire and the binary keeps upstream's map.
-    """
-    keys, entries = _gemini_wire_map(data, funcs)
-
-    def read_str(va: int, n: int) -> str:
-        return bytes(data[va - VM_BASE : va - VM_BASE + n]).decode("ascii", "replace")
-
-    def ours(e: dict) -> bool:
-        return e["val_va"] == e["key_va"] and e["val_len"] == len(GEMINI_WIRE_MODEL)
-
-    carbon_keys = {lvl: f"{GEMINI_WIRE_MODEL}-{lvl}" for lvl in ("high", "medium", "low")}
-    if any(key in keys and not (key in entries and ours(entries[key])) for key in carbon_keys.values()):
-        return ()  # Upstream maps Carbon itself.
-
-    sites = []
-    for lvl, carbon_key in carbon_keys.items():
-        donor_key = f"{GEMINI_WIRE_DONOR}-{lvl}"
-        donor = entries.get(donor_key)
-        if donor is not None and read_str(donor["val_va"], donor["val_len"]) == GEMINI_WIRE_DONOR:
-            entry = donor
-        elif carbon_key in entries and ours(entries[carbon_key]):
-            entry = entries[carbon_key]
-        else:
-            raise RuntimeError(
-                f"geminimodels map has neither {donor_key} nor a patched {carbon_key}; "
-                "re-derive Sites #38-#40 for this version"
-            )
-        needle = carbon_key.encode()
-        target = data.find(needle)
-        if target == -1 or data.find(needle, target + 1) != -1:
-            raise RuntimeError(f"Expected exactly one {carbon_key!r} string literal in the binary")
-        target_va = VM_BASE + target
-
-        k, span_end = entry["off"], entry["ptr_off"] + 8
-        # A patched entry has no recoverable original; --revert restores from the clean backup.
-        original = bytes(data[k:span_end]) if entry is donor else None
-        patched = bytearray(data[k:span_end])
-        patched[0:12] = encode_adrp_add(VM_BASE + k, target_va, 2) + struct.pack("<I", 0xD2800003 | (len(needle) << 5))
-        rel = entry["len_off"] - k
-        patched[rel : rel + 4] = struct.pack("<I", 0xD2800000 | (len(GEMINI_WIRE_MODEL) << 5) | entry["reg"])
-        rel = entry["ptr_off"] - k
-        patched[rel : rel + 8] = encode_adrp_add(VM_BASE + entry["ptr_off"], target_va, 4)
-        sites.append(
-            PatchSite(
-                domain="gemini-wire",
-                name=f"geminimodels map: {carbon_key} -> {GEMINI_WIRE_MODEL} (in place of {donor_key})",
-                va=VM_BASE + k,
-                offset=k,
-                original=original,
-                patched=bytes(patched),
-            )
-        )
-    return tuple(sites)
-
-
 def _text_tail_cave(data: bytes | bytearray) -> tuple[int, int]:
     """File offsets [start, end) of the fill between the __TEXT segment's last section and its end."""
     ncmds = struct.unpack_from("<I", data, 16)[0]
@@ -3186,249 +3058,6 @@ def _text_tail_cave(data: bytes | bytearray) -> tuple[int, int]:
             return last - VM_BASE, min(vmsize, filesize)
         pos += cmdsize
     raise RuntimeError("Mach-O __TEXT segment not found")
-
-
-def _resolve_hydrogen_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
-    """Sites #55a-#55p: Gemini 4 Hydrogen as a built-in model, with four efforts, for gateway sessions.
-
-    agy v1.5.7 knows Hydrogen only from Cloud Code (OAuth). Through an enterprise gateway it is a custom
-    model: shown as its raw ID, without an effort gauge, and sent with `thinkingBudget: 4096`, which
-    CLIProxyAPI honors, so even xhigh thinks like high. Built-in models send the base model plus a
-    `thinkingLevel`. Hydrogen takes the slots of Gemini 3.6 Flash (low, medium, high) and 3.7 Flash low,
-    which CLIProxyAPI does not route, everywhere a model is defined:
-
-    - #55a  its IDs and labels, in the zero fill at the end of __TEXT;
-    - #55b  `defaultmodels.Gemini36Flash` becomes Hydrogen's info builder: effort -> Model enum (as Cloud
-            Code serves them), and the xhigh label whole, since `GeminiModelInfo` only names Low-High;
-    - #55c-#55f  `defaultmodels.init` builds the four efforts in the donors' slots;
-    - #55g-#55j  the `geminimodels` wire map sends each as `gemini-4-hydrogen`;
-    - #55k-#55n  `geminimodels.Catalog` (the static GEMINI_API_KEY list) lists them, keyed and labeled;
-    - #55o  and orders them where the donors stood;
-    - #55p  `toGenaiThinkingLevel` names xhigh `XHIGH`, which CLIProxyAPI accepts, not `EXTRA_HIGH`.
-
-    OAuth sessions are unaffected: Cloud Code requests name `gemini-4-hydrogen-<effort>` and a numeric
-    level, and its catalog arrives from the server. Calls stay at their stock PCs (§5.5). Each site
-    reads a stock or a patched binary; a patched one has no recoverable original, and --revert restores
-    from the clean backup.
-
-    v1.5.8 ships Hydrogen as a built-in with the same four IDs and labels, and sends the same request
-    (`gemini-4-hydrogen`, `thinkingLevel` LOW through XHIGH), keeping 3.6 and 3.7 Flash. There the sites
-    retire, as the Carbon wire-map sites did on v1.5.7.
-    """
-
-    def w(off: int) -> int:
-        return struct.unpack_from("<I", data, off)[0]
-
-    def read_str(va: int, n: int) -> str:
-        return bytes(data[va - VM_BASE : va - VM_BASE + n]).decode("ascii", "replace")
-
-    def pk(*words: int) -> bytes:
-        return b"".join(struct.pack("<I", x) for x in words)
-
-    def is_bl(off: int, target_off: int) -> bool:
-        return w(off) == struct.unpack("<I", encode_bl(VM_BASE + off, VM_BASE + target_off))[0]
-
-    efforts = list(HYDROGEN_EFFORTS)
-    ids = {e: f"{HYDROGEN_WIRE_MODEL}-{e}" for e in efforts}
-    donors = {HYDROGEN_EFFORTS[e][3]: e for e in efforts}
-    top = HYDROGEN_EFFORTS["xhigh"][1]
-    if HYDROGEN_EFFORTS["xhigh"][0] != 100 or any(
-        HYDROGEN_EFFORTS[e][1] != top - HYDROGEN_EFFORTS[e][0] for e in ("low", "medium", "high")
-    ):
-        raise RuntimeError("Site #55b computes the enum as 1528 - level (xhigh: 1528); HYDROGEN_EFFORTS changed")
-    if any(not HYDROGEN_EFFORTS[e][2].startswith(HYDROGEN_FAMILY) for e in efforts):
-        raise RuntimeError("Hydrogen labels must start with HYDROGEN_FAMILY")
-    # These sites turn each donor's wire-map entry into Hydrogen's. A map that holds Hydrogen beside
-    # every donor is upstream's own (v1.5.8): the sites retire and the binary keeps its models.
-    wire_keys, _ = _gemini_wire_map(data, funcs)
-    if set(donors) <= wire_keys and wire_keys & set(ids.values()):
-        return ()
-    sites: list[PatchSite] = []
-
-    # 55a. Strings: IDs, then labels, NUL-terminated, in one page (Site #55o addresses them from one adrp).
-    strings = [ids[e].encode() for e in efforts] + [HYDROGEN_EFFORTS[e][2].encode() for e in efforts]
-    blob = b"".join(s + b"\x00" for s in strings)
-    fill, fill_end = _text_tail_cave(data)
-    cave = (fill + 0x1F) & ~0xF
-    if (cave & ~0xFFF) != ((cave + len(blob) - 1) & ~0xFFF):
-        cave = (cave + 0xFFF) & ~0xFFF
-    if cave + len(blob) > fill_end:
-        raise RuntimeError(f"__TEXT has {fill_end - fill}B of fill; Hydrogen's strings need {len(blob)}B")
-    current = bytes(data[cave : cave + len(blob)])
-    if current not in (bytes(len(blob)), blob):
-        raise RuntimeError(f"__TEXT fill at {hex(VM_BASE + cave)} holds neither zeros nor Hydrogen's strings")
-    at, pos = {}, VM_BASE + cave
-    for key, s in zip([("id", e) for e in efforts] + [("label", e) for e in efforts], strings):
-        at[key] = pos
-        pos += len(s) + 1
-    sites.append(PatchSite("hydrogen", "__TEXT fill -> Gemini 4 Hydrogen IDs and labels", VM_BASE + cave, cave, bytes(len(blob)), blob))
-
-    # 55b. Gemini36Flash(id, level) -> GeminiModelInfo(name, id, enum, level), for levels 1-3 and 100.
-    g36 = funcs["gemini36Flash"][0]
-    info, unsupported = funcs["geminiModelInfo"][0], funcs["unsupportedThinkingLevel"][0]
-    if not (is_bl(g36 + 0x64, info) and is_bl(g36 + 0x88, unsupported)):
-        raise RuntimeError("defaultmodels.Gemini36Flash no longer calls GeminiModelInfo at +0x64 and unsupportedThinkingLevel at +0x88")
-    family_len, xhigh_label = len(HYDROGEN_FAMILY), at[("label", "xhigh")]
-    cmp_w = lambda rn, imm: 0x7100001F | imm << 10 | rn << 5  # noqa: E731
-    va = VM_BASE + g36
-    body = (
-        pk(w(g36 + 0x18), cmp_w(2, 100))                              # str x0, [sp, #0x48]; cmp w2, #100
-        + encode_b_cond(va + 0x20, va + 0x30, COND_EQ)
-        + pk(0x51000449, cmp_w(9, 2))                                 # sub w9, w2, #1; cmp w9, #2
-        + encode_b_cond(va + 0x2C, va + 0x7C, COND_HI)                # levels other than 1-3 and 100: unsupported
-        + encode_movz(9, top)
-        + pk(cmp_w(2, 100), 0x9A8203EA, 0xCB0A0124)                   # csel x10, xzr, x2, eq; sub x4, x9, x10
-        + encode_movz(6, family_len) + encode_movz(7, len(HYDROGEN_EFFORTS["xhigh"][2]))
-        + pk(0xAA0203E5, 0xAA0003E2, 0xAA0103E3, 0x9A8600E1)          # x5 = level; x2, x3 = id; csel x1, x7, x6, eq
-        + encode_adrp_add(va + 0x58, xhigh_label, 0)                  # name: the xhigh label, or its family prefix
-        + NOP
-        + bytes(data[g36 + 0x64 : g36 + 0x7C])                        # bl GeminiModelInfo; return
-        + encode_adrp_add(va + 0x7C, xhigh_label, 0) + encode_movz(1, family_len)
-    )
-    stock = (
-        w(g36 + 0x1C) == cmp_w(2, 1) and w(g36 + 0x2C) == cmp_w(2, 2) and w(g36 + 0x3C) == cmp_w(2, 3)
-        and all(w(g36 + o) & 0xFFE0001F == 0xD2800003 for o in (0x24, 0x34, 0x44))
-    )
-    if not stock and bytes(data[g36 + 0x18 : g36 + 0x88]) != body:
-        raise RuntimeError("defaultmodels.Gemini36Flash is neither stock nor Site #55b")
-    sites.append(PatchSite("hydrogen", "defaultmodels.Gemini36Flash -> Gemini 4 Hydrogen info, efforts low-xhigh",
-                           va + 0x18, g36 + 0x18, bytes(data[g36 + 0x18 : g36 + 0x88]) if stock else None, body))
-
-    # 55c-55f. defaultmodels.init: `adrp x0, id; add; mov x1, #len; mov x2, #level; bl Gemini3xFlash`.
-    ini_start, ini_end = funcs["defaultModelsInit"]
-    callees = (g36, funcs["gemini37Flash"][0])
-    calls: dict[str, int] = {}
-    for off in range(ini_start + 16, ini_end, 4):
-        if not any(is_bl(off, c) for c in callees):
-            continue
-        if (w(off - 16) & 0x9F00001F) != 0x90000000 or (w(off - 8) & 0xFFE0001F) != 0xD2800001:
-            continue
-        name = read_str(decode_adrp_add(data, off - 16), (w(off - 8) >> 5) & 0xFFFF)
-        effort = donors.get(name) or next((e for e in efforts if ids[e] == name), None)
-        if effort is not None:
-            if effort in calls:
-                raise RuntimeError(f"defaultmodels.init builds {name} twice")
-            calls[effort] = off
-    if set(calls) != set(efforts):
-        raise RuntimeError(f"defaultmodels.init: found slots for {sorted(calls)}, expected {efforts}")
-    for e in efforts:
-        off = calls[e]
-        id_va, level = at[("id", e)], HYDROGEN_EFFORTS[e][0]
-        patched = (encode_adrp_add(VM_BASE + off - 16, id_va, 0) + encode_movz(1, len(ids[e]))
-                   + encode_movz(2, level) + encode_bl(VM_BASE + off, VM_BASE + g36))
-        donor = HYDROGEN_EFFORTS[e][3]
-        is_stock = read_str(decode_adrp_add(data, off - 16), (w(off - 8) >> 5) & 0xFFFF) == donor
-        sites.append(PatchSite("hydrogen", f"defaultmodels.init: {ids[e]} in place of {donor}", VM_BASE + off - 16,
-                               off - 16, bytes(data[off - 16 : off + 4]) if is_stock else None, patched))
-
-    # 55g-55j. geminimodels wire map: <id> -> gemini-4-hydrogen, the IDs' own prefix.
-    _, entries = _gemini_wire_map(data, funcs)
-    for e in efforts:
-        donor = HYDROGEN_EFFORTS[e][3]
-        entry, is_stock = entries.get(donor), True
-        if entry is None or entry["value"] != donor.rsplit("-", 1)[0]:
-            entry, is_stock = entries.get(ids[e]), False
-            if entry is None or entry["value"] != HYDROGEN_WIRE_MODEL:
-                raise RuntimeError(f"geminimodels map has neither {donor} nor a patched {ids[e]}")
-        k, span_end, id_va = entry["off"], entry["ptr_off"] + 8, at[("id", e)]
-        patched = bytearray(data[k:span_end])
-        patched[0:12] = encode_adrp_add(VM_BASE + k, id_va, 2) + encode_movz(3, len(ids[e]))
-        rel = entry["len_off"] - k
-        patched[rel : rel + 4] = encode_movz(entry["reg"], len(HYDROGEN_WIRE_MODEL))
-        rel = entry["ptr_off"] - k
-        patched[rel : rel + 8] = encode_adrp_add(VM_BASE + entry["ptr_off"], id_va, 4)
-        sites.append(PatchSite("hydrogen", f"geminimodels map: {ids[e]} -> {HYDROGEN_WIRE_MODEL} (in place of {donor})",
-                               VM_BASE + k, k, bytes(data[k:span_end]) if is_stock else None, bytes(patched)))
-
-    # 55k-55n. geminimodels.Catalog: `mov x0, #enum; bl details; mov x1, #label_len; str x1, [x0, #0x10]; ...
-    # adrp x4, label; add; str x4, [x0, #8]; ... adrp x2, id; add; mov x3, #id_len; bl mapassign_faststr`.
-    cat_start, cat_end = funcs["geminiCatalog"]
-    details = funcs["geminiDetails"][0]
-    key_lens: dict[int, int] = {}  # key VA -> length, for Site #55o
-    slots: dict[str, int] = {}
-    for off in range(cat_start, cat_end - 0x54, 4):
-        if (w(off) & 0xFFE0001F) != 0xD2800000 or not is_bl(off + 4, details):
-            continue
-        if (w(off + 8) & 0xFFE0001F) != 0xD2800001 or w(off + 0xC) != 0xF9000801 or w(off + 0x34) != 0xF9000404:
-            continue
-        if (w(off + 0x44) & 0x9F00001F) != 0x90000002 or (w(off + 0x4C) & 0xFFE0001F) != 0xD2800003:
-            continue
-        key_va, key_len = decode_adrp_add(data, off + 0x44), (w(off + 0x4C) >> 5) & 0xFFFF
-        key_lens[key_va] = key_len
-        name = read_str(key_va, key_len)
-        effort = donors.get(name) or next((e for e in efforts if ids[e] == name), None)
-        if effort is not None:
-            slots[effort] = off
-    if set(slots) != set(efforts):
-        raise RuntimeError(f"geminimodels.Catalog: found slots for {sorted(slots)}, expected {efforts}")
-    for e in efforts:
-        off, (_, enum, label, donor) = slots[e], HYDROGEN_EFFORTS[e]
-        patched = bytearray(data[off : off + 0x50])
-        patched[0:4] = encode_movz(0, enum)
-        patched[8:12] = encode_movz(1, len(label))
-        patched[0x2C:0x34] = encode_adrp_add(VM_BASE + off + 0x2C, at[("label", e)], 4)
-        patched[0x44:0x50] = encode_adrp_add(VM_BASE + off + 0x44, at[("id", e)], 2) + encode_movz(3, len(ids[e]))
-        is_stock = read_str(decode_adrp_add(data, off + 0x44), (w(off + 0x4C) >> 5) & 0xFFFF) == donor
-        sites.append(PatchSite("hydrogen", f"geminimodels.Catalog: {ids[e]} ({label}) in place of {donor}",
-                               VM_BASE + off, off, bytes(data[off : off + 0x50]) if is_stock else None, bytes(patched)))
-
-    # 55o. Catalog's ordered IDs: `adrp x3, id; add x3; stp x3, x<len>, [x0, #slot]`, lengths in shared
-    # registers. The donors' four entries follow 3.7 Flash medium's; they become one adrp and per-entry adds.
-    def triplet(off: int) -> tuple[int, int, int] | None:
-        a, b, c = w(off), w(off + 4), w(off + 8)
-        if (a & 0x9F00001F) != 0x90000003 or (b & 0xFFC003FF) != 0x91000063 or (c & 0xFFC003FF) != 0xA9000003:
-            return None
-        return decode_adrp_add(data, off), (c >> 10) & 0x1F, ((c >> 15) & 0x7F) * 8  # key VA, length reg, slot
-    found = {off: t for off in range(cat_start, cat_end - 12, 4) if (t := triplet(off))}
-    len_reg = {key_lens[t[0]]: t[1] for t in found.values() if t[0] in key_lens}
-    medium37 = next((va for va, n in key_lens.items() if read_str(va, n) == "gemini-3.7-flash-medium"), None)
-    anchor = next((off for off, t in found.items() if t[0] == medium37), None)
-    if anchor is None:
-        raise RuntimeError("geminimodels.Catalog: no ordered entry for gemini-3.7-flash-medium")
-    span, slot0 = anchor + 12, found[anchor][2] + 0x10
-    order = ["xhigh", "high", "medium", "low"]  # where the 3.7 low and 3.6 high, medium, low IDs stood
-    need = {len(ids[e]) for e in order} - {len(ids[e]) for e in ("high", "medium")}
-    if not need <= set(len_reg):
-        raise RuntimeError(f"geminimodels.Catalog: no shared length register for {sorted(need - set(len_reg))}")
-    page = at[("id", "low")]
-    if any((at[("id", e)] & ~0xFFF) != (page & ~0xFFF) for e in efforts):
-        raise RuntimeError("Hydrogen's IDs must share one page")
-    add_x = lambda rd, rn, imm: 0x91000000 | imm << 10 | rn << 5 | rd  # noqa: E731
-    stp = lambda rt, rt2, slot: 0xA9000000 | (slot // 8) << 15 | rt2 << 10 | rt  # noqa: E731
-    patched = encode_adrp(VM_BASE + span, page, 3)
-    for i, e in enumerate(order):
-        n, slot = len(ids[e]), slot0 + 0x10 * i
-        patched += pk(add_x(9, 3, at[("id", e)] & 0xFFF))
-        if e in ("high", "medium"):
-            patched += encode_movz(10, n) + pk(stp(9, 10, slot))
-        else:
-            patched += pk(stp(9, len_reg[n], slot))
-    patched += NOP
-    stock_keys = [found.get(span + 12 * i) for i in range(4)]
-    is_stock = all(t is not None and t[2] == slot0 + 0x10 * i and read_str(t[0], key_lens.get(t[0], 0)) == HYDROGEN_EFFORTS[e][3]
-                   for i, (t, e) in enumerate(zip(stock_keys, order)))
-    if len(patched) != 48 or (not is_stock and bytes(data[span : span + 48]) != patched):
-        raise RuntimeError("geminimodels.Catalog's ordered IDs are neither stock nor Site #55o")
-    sites.append(PatchSite("hydrogen", "geminimodels.Catalog: order Hydrogen xhigh-low where its donors stood",
-                           VM_BASE + span, span, bytes(data[span : span + 48]) if is_stock else None, patched))
-
-    # 55p. toGenaiThinkingLevel: `cmp w0, #100; b.ne; adrp x0, "EXTRA_HIGH"; add; mov x1, #10`.
-    t_start, t_end = funcs["toGenaiThinkingLevel"]
-    cmp100 = next((o for o in range(t_start, t_end, 4) if w(o) == 0x7101901F), None)
-    if cmp100 is None or (w(cmp100 + 8) & 0x9F00001F) != 0x90000000 or (w(cmp100 + 16) & 0xFFE0001F) != 0xD2800001:
-        raise RuntimeError("toGenaiThinkingLevel no longer names level 100 at `cmp w0, #100`")
-    xhigh = data.find(b"THINKING_LEVEL_XHIGH")
-    if xhigh < 0:
-        raise RuntimeError("No THINKING_LEVEL_XHIGH literal to borrow XHIGH from")
-    xhigh_va = VM_BASE + xhigh + len(b"THINKING_LEVEL_")
-    name = read_str(decode_adrp_add(data, cmp100 + 8), (w(cmp100 + 16) >> 5) & 0xFFFF)
-    if name not in ("EXTRA_HIGH", "XHIGH"):
-        raise RuntimeError(f"toGenaiThinkingLevel names level 100 {name!r}")
-    patched = encode_adrp_add(VM_BASE + cmp100 + 8, xhigh_va, 0) + encode_movz(1, 5)
-    sites.append(PatchSite("hydrogen", "genairequest.toGenaiThinkingLevel -> name level 100 XHIGH, not EXTRA_HIGH",
-                           VM_BASE + cmp100 + 8, cmp100 + 8,
-                           bytes(data[cmp100 + 8 : cmp100 + 20]) if name == "EXTRA_HIGH" else None, patched))
-    return tuple(sites)
 
 
 # Sites #41-#47: follow the terminal's light/dark switch live. bubbletea already decodes DEC mode 2031
@@ -3653,7 +3282,6 @@ def _resolve_groups(data: bytes | bytearray, version: str, strict: bool) -> dict
     run("cot-rendering", lambda: _resolve_cot_sites(data, funcs, out["palette-typography"][2]), "palette-typography")
     run("statusline-refresh", lambda: _resolve_statusline_refresh_sites(data, funcs))
     run("tool-monitors", lambda: _resolve_monitor_sites(data))
-    run("gemini-wire", lambda: _resolve_gemini_wire_sites(data, funcs))
     run("color-scheme", lambda: _resolve_color_scheme_sites(data, funcs, (cave()[0], cave()[0] + 0x40)), "palette-typography")
     run("command-elbow", lambda: _resolve_command_elbow_sites(data, funcs))
     run("spinner", lambda: _resolve_spinner_sites(data, funcs))
@@ -3664,7 +3292,6 @@ def _resolve_groups(data: bytes | bytearray, version: str, strict: bool) -> dict
     run("code-theme", lambda: _resolve_code_theme_sites(data))
     run("thought-grouping", lambda: _resolve_thought_grouping_sites(data, funcs))
     run("thought-block", lambda: _resolve_thought_block_sites(data, funcs))
-    run("hydrogen", lambda: _resolve_hydrogen_sites(data, funcs))
     run("prompt", lambda: _resolve_prompt_template_sites(data, version, strict))
     return out
 
@@ -3681,7 +3308,7 @@ def resolve_site_groups(data: bytes | bytearray, version: str, strict: bool = Fa
 
 
 def resolve_patch_sites(data: bytes | bytearray, version: str, strict: bool = False) -> tuple[PatchSite, ...]:
-    """Resolve every site, in apply order: the TUI/Cortex code sites, tool monitors, Gemini wire map, color scheme, command elbow, spinner, pending line, its verbs, tool marks, live thinking, thought grouping, thought block, Hydrogen, and changed prompt templates.
+    """Resolve every site, in apply order: the TUI/Cortex code sites, tool monitors, color scheme, command elbow, spinner, pending line, its verbs, tool marks, code theme, live thinking, thought grouping, thought block, and changed prompt templates.
 
     `strict` is for clean backups: every prompt template must match its pinned stock version.
     """
@@ -3693,9 +3320,9 @@ def resolve_patch_sites(data: bytes | bytearray, version: str, strict: bool = Fa
     cot_step_sites, cot_strip_site = out["cot-rendering"]
     return (
         *out["context-window"], *cot_step_sites, *pal_pre, out["statusline-refresh"], *pal_post, cot_strip_site,
-        *out["tool-monitors"], *out["gemini-wire"], *out["color-scheme"], *out["command-elbow"], *out["spinner"],
+        *out["tool-monitors"], *out["color-scheme"], *out["command-elbow"], *out["spinner"],
         *out["pending-line"], *out["pending-verbs"], *out["tool-marks"], *out["code-theme"], *out["live-thinking"], *out["thought-grouping"], *out["thought-block"],
-        *out["hydrogen"], *out["prompt"],
+        *out["prompt"],
     )
 
 
@@ -3842,11 +3469,17 @@ def sha256_file(path: pathlib.Path) -> str:
 
 
 def detect_binary_version(path: pathlib.Path) -> str:
-    key = _file_stat_key(path)
-    cache = _load_meta_cache()
-    entry = cache.get("files", {}).get(key, {})
-    if "version" in entry:
-        return entry["version"]
+    if not path.exists():
+        return "unknown"
+    # A `#!` wrapper delegates `--version` to another binary, so its own stat() cannot key the cache.
+    with path.open("rb") as f:
+        is_wrapper = f.read(2) == b"#!"
+    if not is_wrapper:
+        key = _file_stat_key(path)
+        cache = _load_meta_cache()
+        entry = cache.get("files", {}).get(key, {})
+        if "version" in entry:
+            return entry["version"]
     ver = "unknown"
     try:
         out = subprocess.check_output([str(path), "--version"], text=True, stderr=subprocess.DEVNULL, timeout=5).strip()
@@ -3854,7 +3487,7 @@ def detect_binary_version(path: pathlib.Path) -> str:
             ver = out.split()[0]
     except Exception:
         pass
-    if ver != "unknown":
+    if ver != "unknown" and not is_wrapper:
         cache.setdefault("files", {}).setdefault(key, {})["version"] = ver
         _save_meta_cache(cache)
     return ver
