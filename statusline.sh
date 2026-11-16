@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Antigravity CLI Pastel Spectrum Powerline Bar (Atomic Per-Metric Color Blocks + Adaptive Dark/Light)
-# Design: 8+ Distinct Pastel Spectrum Blocks (\ue0b0 ) + Auto Dark/Light Palette
-# Performance: 1x jq process, 5s cached theme check (~0ms steady-state), 0 subshells
+# Design: Semantic Mode×Sandbox Posture + Periodic Model Shorthand + Dynamic Git Worktree Tracking
+# Performance: 1x jq process, 0-fork zstat steady-state worktree/theme cache (~13ms render)
 emulate -L zsh
 setopt PIPE_FAIL NO_UNSET
 zmodload zsh/datetime
@@ -13,7 +13,7 @@ local NOW=$EPOCHREALTIME
 integer NOW_SEC=${EPOCHSECONDS:-${NOW%.*}}
 
 # ─── 1. Single-Pass jq Extraction (ASCII \x1f Unit Separator) ─────────────────
-local SESSION_ID STATE CYCLE_MODE PERM_MODE MODEL_ID MODEL_DISPLAY EFFORT CWD BRANCH DIRTY SBX_ON USED_PCT TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K COST_USD SUB_USD QUOTA_PCT SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING
+local SESSION_ID STATE CYCLE_MODE PERM_MODE MODEL_ID MODEL_DISPLAY EFFORT CWD TRANSCRIPT_PATH BRANCH DIRTY SBX_ON USED_PCT TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K COST_USD SUB_USD QUOTA_PCT SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING
 
 jq -r '
   [
@@ -24,7 +24,8 @@ jq -r '
     (.model.id // "-" | tostring),
     (.model.display_name // "-" | tostring),
     (.model.effort // "-" | tostring),
-    (.cwd // .workspace.current_dir // .workspace.project_dir // "" | tostring),
+    (([.workspace.current_dir, .cwd, .workspace.project_dir] | map(select(type == "string" and length > 0)) | .[0]) // "" | tostring),
+    (.transcript_path // "" | tostring),
     (.vcs.branch // .vcs.client // "" | tostring),
     (if .vcs.dirty == true then "true" else "false" end),
     (if .sandbox.enabled == true then "true" else "false" end),
@@ -58,7 +59,7 @@ jq -r '
     (if .tool_confirmation_pending == true then "true" else "false" end)
   ] | map(tostring) | join("\u001f")
 ' 2>/dev/null | IFS=$'\x1f' read -r \
-  SESSION_ID STATE CYCLE_MODE PERM_MODE MODEL_ID MODEL_DISPLAY EFFORT CWD BRANCH DIRTY SBX_ON \
+  SESSION_ID STATE CYCLE_MODE PERM_MODE MODEL_ID MODEL_DISPLAY EFFORT CWD TRANSCRIPT_PATH BRANCH DIRTY SBX_ON \
   USED_PCT TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K \
   COST_USD SUB_USD QUOTA_PCT \
   SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING || exit 0
@@ -331,29 +332,221 @@ local MODEL_LABEL="$MODEL_ABBR"
 SEG_BG+=("$P_LAVENDER")
 SEG_TXT+=("${B}${MODEL_LABEL}${NB}")
 
-# ─── 8. Optional Block: VCS Branch & Worktree (Pastel Sky / Rose when dirty) ──
-# Upstream agy's store.detectVCSOnDisk (0x102d629b0) only sets .vcs.type="git"
-# and leaves .vcs.branch and .vcs.dirty empty. Resolve HEAD & linked worktree
-# in-process (0 forks) and cache dirty status for 2s (or until turn completion).
-local IS_WORKTREE="false"
-if [[ -n "${CWD:-}" && -d "$CWD" ]]; then
-  local SEARCH_DIR="$CWD" GIT_META="" HEAD_FILE=""
-  while [[ -n "$SEARCH_DIR" && "$SEARCH_DIR" != "/" ]]; do
-    if [[ -d "$SEARCH_DIR/.git" ]]; then
-      HEAD_FILE="$SEARCH_DIR/.git/HEAD"
-      break
-    elif [[ -f "$SEARCH_DIR/.git" ]]; then
-      read -r GIT_META < "$SEARCH_DIR/.git" 2>/dev/null || true
-      if [[ "$GIT_META" == "gitdir: "* ]]; then
-        local GD="${GIT_META#gitdir: }"
-        [[ "$GD" != /* ]] && GD="$SEARCH_DIR/$GD"
-        [[ "$GD" == *"/worktrees/"* ]] && IS_WORKTREE="true"
-        HEAD_FILE="$GD/HEAD"
-      fi
-      break
-    fi
-    SEARCH_DIR="${SEARCH_DIR:h}"
+# ─── 8. Optional Block: VCS Branch & Dynamic Worktree Tracking ────────────────
+# Upstream agy's store.detectVCSOnDisk (0x102ec4c20) only sets .vcs.type="git"
+# and pins .cwd to the startup directory. Resolve HEAD & linked worktrees in-process
+# (0 forks in steady state), and follow active linked worktrees via transcript_path
+# whenever its (mtime, size) advances.
+local BASE_CWD="${CWD:-}"
+local _GIT_ROOT="" _GIT_HEAD="" _GIT_COMMON="" _GIT_IS_WT="false"
+
+_agy_resolve_git() {
+  _GIT_ROOT="" _GIT_HEAD="" _GIT_COMMON="" _GIT_IS_WT="false"
+  local S="${1:-}"
+  [[ -z "$S" ]] && return 1
+  [[ "$S" == "~" ]] && S="$HOME"
+  [[ "$S" == "~/"* ]] && S="${HOME}/${S#~/}"
+  S="${S/#\$HOME\//${HOME}/}"
+  S="${S/#\$\{HOME\}\//${HOME}/}"
+  [[ "$S" == *'$'* || "$S" == *'`'* || "$S" == *'*'* || "$S" == *'?'* ]] && return 1
+  [[ "$S" != /* && -n "$BASE_CWD" ]] && S="${BASE_CWD}/${S}"
+  while [[ -n "$S" && "$S" != "/" && ! -d "$S" ]]; do
+    S="${S:h}"
   done
+  [[ -d "$S" ]] || return 1
+  S="${S:A}"
+  local META="" GD="" CD_REL=""
+  while [[ -n "$S" && "$S" != "/" ]]; do
+    if [[ -d "$S/.git" ]]; then
+      _GIT_ROOT="$S"
+      _GIT_HEAD="$S/.git/HEAD"
+      _GIT_COMMON="${S}/.git"
+      _GIT_COMMON="${_GIT_COMMON:A}"
+      _GIT_IS_WT="false"
+      return 0
+    elif [[ -f "$S/.git" ]]; then
+      IFS= read -r META < "$S/.git" 2>/dev/null || true
+      META="${META%$'\r'}"
+      if [[ "$META" == "gitdir: "* ]]; then
+        GD="${META#gitdir: }"
+        [[ "$GD" != /* ]] && GD="$S/$GD"
+        [[ -d "$GD" ]] || return 1
+        GD="${GD:A}"
+        _GIT_ROOT="$S"
+        _GIT_HEAD="$GD/HEAD"
+        if [[ -r "$GD/commondir" ]]; then
+          IFS= read -r CD_REL < "$GD/commondir" 2>/dev/null || true
+          CD_REL="${CD_REL%$'\r'}"
+          if [[ -n "$CD_REL" ]]; then
+            [[ "$CD_REL" != /* ]] && _GIT_COMMON="$GD/$CD_REL" || _GIT_COMMON="$CD_REL"
+            _GIT_COMMON="${_GIT_COMMON:A}"
+          fi
+        fi
+        if [[ -z "$_GIT_COMMON" ]]; then
+          if [[ "$GD" == *"/worktrees/"* ]]; then
+            _GIT_COMMON="${GD%/worktrees/*}"
+            _GIT_COMMON="${_GIT_COMMON:A}"
+          else
+            _GIT_COMMON="$GD"
+          fi
+        fi
+        [[ "$GD" == *"/worktrees/"* || "$_GIT_COMMON" != "$GD" ]] && _GIT_IS_WT="true"
+        return 0
+      fi
+      return 1
+    fi
+    S="${S:h}"
+  done
+  return 1
+}
+
+local BASE_ROOT="" BASE_HEAD="" BASE_COMMON="" BASE_IS_WT="false"
+if [[ -n "$BASE_CWD" && -d "$BASE_CWD" ]] && _agy_resolve_git "$BASE_CWD"; then
+  BASE_ROOT="$_GIT_ROOT"
+  BASE_HEAD="$_GIT_HEAD"
+  BASE_COMMON="$_GIT_COMMON"
+  BASE_IS_WT="$_GIT_IS_WT"
+fi
+
+local ACTIVE_ROOT="$BASE_ROOT" ACTIVE_HEAD="$BASE_HEAD" IS_WORKTREE="$BASE_IS_WT"
+integer TRANSCRIPT_UPDATED=0
+[[ -z "${TRANSCRIPT_PATH:-}" ]] && TRANSCRIPT_PATH="${HOME}/.gemini/antigravity-cli/brain/${SESSION_ID}/.system_generated/logs/transcript.jsonl"
+
+if [[ -r "$TRANSCRIPT_PATH" ]]; then
+  local -A T_STAT=()
+  if zstat -H T_STAT "$TRANSCRIPT_PATH" 2>/dev/null && [[ "${T_STAT[mtime]:-}" == <-> && "${T_STAT[size]:-}" == <-> ]]; then
+    local WT_CACHE="/tmp/agy_wt_${SESSION_ID//[^a-zA-Z0-9_-]/_}.dat"
+    local WT_MTIME=0 WT_SIZE=0 WT_CACHED_DIR=""
+    if [[ -f "$WT_CACHE" ]]; then
+      IFS=$'\t' read -r WT_MTIME WT_SIZE WT_CACHED_DIR < "$WT_CACHE" 2>/dev/null || true
+    fi
+
+    local SCAN_ACTIVE="$BASE_ROOT"
+    if [[ -n "$WT_CACHED_DIR" ]] && _agy_resolve_git "$WT_CACHED_DIR"; then
+      if [[ -z "$BASE_COMMON" || "$_GIT_COMMON" == "$BASE_COMMON" ]]; then
+        SCAN_ACTIVE="$_GIT_ROOT"
+      fi
+    fi
+
+    if [[ "$WT_MTIME" != "${T_STAT[mtime]}" || "$WT_SIZE" != "${T_STAT[size]}" ]]; then
+      TRANSCRIPT_UPDATED=1
+      integer TAIL_BYTES=65536
+      [[ "$WT_SIZE" == "0" || "$WT_SIZE" != <-> ]] && TAIL_BYTES=131072
+      local EV_KIND="" EV_PAYLOAD=""
+      while IFS=$'\t' read -r EV_KIND EV_PAYLOAD; do
+        [[ -z "$EV_KIND" || -z "$EV_PAYLOAD" ]] && continue
+        if [[ "$EV_KIND" == "CMD" ]]; then
+          local -a CMD_PATHS=("${(@ps:\x1f:)EV_PAYLOAD}")
+          local CP="" CMD_LAST="" CMD_WT=""
+          for CP in "${CMD_PATHS[@]}"; do
+            if _agy_resolve_git "$CP" && [[ -z "$BASE_COMMON" || "$_GIT_COMMON" == "$BASE_COMMON" ]]; then
+              CMD_LAST="$_GIT_ROOT"
+              [[ "$_GIT_IS_WT" == "true" ]] && CMD_WT="$_GIT_ROOT"
+            fi
+          done
+          if [[ -n "$CMD_WT" ]]; then
+            SCAN_ACTIVE="$CMD_WT"
+          elif [[ -n "$CMD_LAST" ]]; then
+            SCAN_ACTIVE="$CMD_LAST"
+          fi
+        else
+          if _agy_resolve_git "$EV_PAYLOAD" && [[ -z "$BASE_COMMON" || "$_GIT_COMMON" == "$BASE_COMMON" ]]; then
+            if [[ "$EV_KIND" == "STRONG" || "$_GIT_IS_WT" == "true" || -z "$SCAN_ACTIVE" ]]; then
+              SCAN_ACTIVE="$_GIT_ROOT"
+            fi
+          fi
+        fi
+      done < <(
+        /usr/bin/tail -c "$TAIL_BYTES" "$TRANSCRIPT_PATH" 2>/dev/null | jq -Rr '
+          def unstr: if type == "string" then (fromjson? // .) else empty end;
+          def unq:
+            if startswith("\"") and endswith("\"") then .[1:-1]
+            elif startswith("\u0027") and endswith("\u0027") then .[1:-1]
+            else . end;
+          def join_rel($base; $p):
+            if ($base != null and ($p | startswith("/") | not) and ($p | startswith("~") | not) and ($p | startswith("$") | not)) then
+              $base + "/" + $p
+            else $p end;
+          def wt_add_path:
+            [ scan("(?:\"[^\"]+\"|\u0027[^\u0027]+\u0027|\\S+)") | unq ] as $toks |
+            reduce range(0; $toks | length) as $i (
+              {skip: false, found: null};
+              if .found != null then .
+              elif .skip then .skip = false
+              else
+                ($toks[$i]) as $t |
+                if ($t == "-b" or $t == "-B" or $t == "--reason") then .skip = true
+                elif ($t | startswith("-")) then .
+                else .found = $t
+                end
+              end
+            ) | .found;
+          def parse_cmd($raw):
+            (if ($raw | contains("<<")) then ($raw | split("\n")[0]) else $raw end) as $head |
+            ($head | gsub("python3?\\s+-c\\s+(?:\u0027[^\u0027]*\u0027|\"[^\"]*\")"; "python_inline")) as $clean |
+            [ $clean | splits("(?:&&|\\|\\||;|\\n)") | gsub("^\\s+|\\s+$"; "") | select(length > 0) ] as $clauses |
+            (reduce $clauses[] as $cl (
+              {cwd: null, out: []};
+              if ($cl | test("^(?:\\(\\s*)?(?:cd|pushd)\\s+")) then
+                (($cl | capture("^(?:\\(\\s*)?(?:cd|pushd)\\s+(?<p>\"[^\"]+\"|\u0027[^\u0027]+\u0027|[^\\s;&|)\"\u0027]+)") | .p) // null) as $p |
+                if $p != null and ($p | unq) != "-" then
+                  join_rel(.cwd; ($p | unq)) as $np |
+                  .cwd = $np | .out += [$np]
+                else . end
+              elif ($cl | test("^(?:\\(\\s*)?(?:/usr/bin/)?(?:git|gh)\\s+")) then
+                ($cl | sub("^(?:\\(\\s*)?(?:/usr/bin/)?(?<bin>git|gh)\\s+"; "")) as $g |
+                (if ($g | test("^-C\\s+")) then
+                  (($g | capture("^-C\\s+(?<c>\"[^\"]+\"|\u0027[^\u0027]+\u0027|\\S+)\\s+(?<rest>.*)$")) // {c: null, rest: $g})
+                else {c: null, rest: $g} end) as $parsed |
+                ($parsed.c | if . != null then join_rel(.cwd; unq) else null end) as $cdir |
+                ($parsed.rest // "") as $rest |
+                if ($rest | test("^(?:worktree|wt)\\s+add\\b")) then
+                  ($rest | sub("^(?:worktree|wt)\\s+add\\s*"; "") | wt_add_path) as $wtp |
+                  if $wtp != null then
+                    .out += [join_rel(($cdir // .cwd); $wtp)]
+                  else . end
+                elif $cdir != null then
+                  .out += [$cdir]
+                elif (.cwd == null and ($cl | test("^(?:\\(\\s*)?(?:/usr/bin/)?git\\s+")) and ($rest | test("^(?:status|diff|log|show|add|commit|merge|rebase|checkout|switch|pull|push|reset|stash|cherry-pick|restore|clean|rm|mv|tag)\\b"))) then
+                  .out += ["."]
+                else . end
+              else . end
+            ) | .out) as $cands |
+            if ($cands | length) > 0 then "CMD\t" + ($cands | join("\u001f")) else empty end;
+
+          fromjson? | select((.tool_calls | type) == "array") |
+          .tool_calls[] | .name as $n | (.args // {}) as $a |
+          if ($n == "run_command") then
+            ($a.CommandLine | unstr) as $cmd |
+            if ($cmd | type) == "string" then parse_cmd($cmd) else empty end
+          elif ($n == "edit_file" or $n == "write_file" or $n == "replace_file_content" or $n == "write_to_file" or $n == "run_workflow") then
+            (($a.Path // $a.TargetFile // $a.Cwd) | unstr) as $p |
+            if ($p | type) == "string" and ($p | length) > 0 then "STRONG\t" + $p else empty end
+          else
+            (($a.Path // $a.TargetFile // $a.AbsolutePath // $a.SearchPath // $a.SearchDirectory // $a.DirectoryPath) | unstr) as $p |
+            if ($p | type) == "string" and ($p | length) > 0 then "SOFT\t" + $p else empty end
+          end
+        ' 2>/dev/null
+      )
+      print -r -- "${T_STAT[mtime]}"$'\t'"${T_STAT[size]}"$'\t'"${SCAN_ACTIVE}" >| "$WT_CACHE" 2>/dev/null || true
+    fi
+
+    if [[ -n "$SCAN_ACTIVE" ]] && _agy_resolve_git "$SCAN_ACTIVE"; then
+      ACTIVE_ROOT="$_GIT_ROOT"
+      ACTIVE_HEAD="$_GIT_HEAD"
+      IS_WORKTREE="$_GIT_IS_WT"
+    fi
+  fi
+fi
+
+local VCS_DIR="${ACTIVE_ROOT:-${BASE_CWD}}"
+local HEAD_FILE="$ACTIVE_HEAD"
+if [[ -n "$ACTIVE_ROOT" && "$ACTIVE_ROOT" != "$BASE_ROOT" ]]; then
+  BRANCH=""
+  DIRTY="false"
+fi
+
+if [[ -n "$VCS_DIR" && -d "$VCS_DIR" ]]; then
   if [[ -z "$BRANCH" && -n "$HEAD_FILE" && -r "$HEAD_FILE" ]]; then
     local HEAD_CONTENT=""
     read -r HEAD_CONTENT < "$HEAD_FILE" 2>/dev/null || true
@@ -369,15 +562,15 @@ if [[ -n "${CWD:-}" && -d "$CWD" ]]; then
     if [[ -f "$VCS_CACHE" ]]; then
       IFS=$'\t' read -r VCS_TS VCS_CWD VCS_DIRTY < "$VCS_CACHE" 2>/dev/null || true
     fi
-    if (( DELTA_OUT == 0 )) && [[ "$VCS_TS" == <-> ]] && (( NOW_SEC - VCS_TS < 2 )) && [[ "$VCS_CWD" == "$CWD" ]]; then
+    if (( ! TRANSCRIPT_UPDATED && DELTA_OUT == 0 )) && [[ "$VCS_TS" == <-> ]] && (( NOW_SEC - VCS_TS < 2 )) && [[ "$VCS_CWD" == "$VCS_DIR" ]]; then
       DIRTY="$VCS_DIRTY"
     else
-      if [[ -n "$(/usr/bin/git -C "$CWD" --no-optional-locks status --porcelain --ignore-submodules=dirty 2>/dev/null)" ]]; then
+      if [[ -n "$(/usr/bin/git -C "$VCS_DIR" --no-optional-locks status --porcelain --ignore-submodules=dirty 2>/dev/null)" ]]; then
         DIRTY="true"
       else
         DIRTY="false"
       fi
-      print -r -- "${NOW_SEC}"$'\t'"${CWD}"$'\t'"${DIRTY}" >| "$VCS_CACHE" 2>/dev/null || true
+      print -r -- "${NOW_SEC}"$'\t'"${VCS_DIR}"$'\t'"${DIRTY}" >| "$VCS_CACHE" 2>/dev/null || true
     fi
   fi
 fi
