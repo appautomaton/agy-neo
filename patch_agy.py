@@ -134,9 +134,6 @@ TARGET_SYMBOLS: dict[str, str] = {
     "keepAlivesStopLocked": "google3/third_party/jetski/language_server/modelapiccpa/modelapiccpa.(*keepAlives).stopLocked",
     "osGetenv": "os.Getenv",
     "mapdeleteFaststr": "runtime.mapdelete_faststr",
-}
-
-OPTIONAL_SYMBOLS: dict[str, str] = {
     "thoughtBodyRows": "google3/third_party/jetski/cli/render/render.thoughtBodyRows",
     "isInFlightThinkingOnly": "google3/third_party/jetski/cli/render/render.isInFlightThinkingOnly",
 }
@@ -365,16 +362,11 @@ def fold_lipgloss_copy_x5_x4(attr_mask: int) -> bytes:
 
 def locate_target_functions(data: bytes | bytearray) -> dict[str, tuple[int, int]]:
     """Parse Mach-O __lrodata_gopcln to return {key: (start_offset, end_offset)}, cached by Mach-O header digest."""
-    all_symbols = {**TARGET_SYMBOLS, **OPTIONAL_SYMBOLS}
-    sym_sig = hashlib.blake2b(repr(sorted(all_symbols.items())).encode(), digest_size=4).hexdigest()
+    sym_sig = hashlib.blake2b(repr(sorted(TARGET_SYMBOLS.items())).encode(), digest_size=4).hexdigest()
     hdr_key = f"{len(data)}:{hashlib.blake2b(bytes(data[:4096]), digest_size=8).hexdigest()}:{sym_sig}"
     cache = _load_meta_cache()
     cached_bounds = cache.get("pclntab", {}).get(hdr_key)
-    if (
-        isinstance(cached_bounds, dict)
-        and set(TARGET_SYMBOLS) <= set(cached_bounds)
-        and set(cached_bounds) <= set(all_symbols)
-    ):
+    if isinstance(cached_bounds, dict) and set(cached_bounds) == set(TARGET_SYMBOLS):
         return {k: (v[0], v[1]) for k, v in cached_bounds.items()}
 
     magic, _, _, _, ncmds, _, _, _ = struct.unpack_from("<IIIIIIII", data, 0)
@@ -410,7 +402,7 @@ def locate_target_functions(data: bytes | bytearray) -> dict[str, tuple[int, int
     funcnametab_off = gopcln_off + struct.unpack_from("<Q", data, gopcln_off + 32)[0]
     functab_off = gopcln_off + struct.unpack_from("<Q", data, gopcln_off + 64)[0]
 
-    reverse_map = {sym.encode("utf-8"): key for key, sym in all_symbols.items()}
+    reverse_map = {sym.encode("utf-8"): key for key, sym in TARGET_SYMBOLS.items()}
     found: dict[str, tuple[int, int]] = {}
     text_file_base = text_addr - VM_BASE
 
@@ -423,7 +415,7 @@ def locate_target_functions(data: bytes | bytearray) -> dict[str, tuple[int, int
         if key is not None:
             next_entry_off = struct.unpack_from("<I", data, functab_off + (i + 1) * 8)[0]
             found[key] = (text_file_base + entry_off, text_file_base + next_entry_off)
-            if len(found) == len(all_symbols):
+            if len(found) == len(TARGET_SYMBOLS):
                 break
 
     missing = set(TARGET_SYMBOLS) - set(found)
@@ -846,37 +838,24 @@ def _resolve_cot_sites(
     s9_off = s8_off + 0x84
     s9_va = VM_BASE + s9_off
 
-    # 10 & 11. omit 2-space paragraph prefix & style CoT body paragraphs with Faint + Italic (\x1b[2;3m).
-    # In v1.5.9+, upstream extracted the CoT body paragraph loop into render.thoughtBodyRows; earlier
-    # releases inline it in render.stepContent.
-    if "thoughtBodyRows" in funcs:
-        tbr = funcs["thoughtBodyRows"]
-        cats = _calls_to(data, tbr, funcs["concatstring2"][0])
-        if len(cats) != 1:
-            raise RuntimeError(f"thoughtBodyRows: expected one `concatstring2`, found {len(cats)}")
-        cat = cats[0]
-        if struct.unpack_from("<I", data, cat - 4)[0] not in (0xB27F03E2, 0xAA1F03E2):
-            raise RuntimeError("thoughtBodyRows: expected 2-byte prefix length before `concatstring2`")
-        s10_off = cat - 4
-        sp5 = _decode_sp_add(data, cat + 12)
-        if sp5 is None or sp5[1] != 5 or sp5[2] != 8:
-            raise RuntimeError("thoughtBodyRows: expected `add x5, sp, #8` for Style receiver")
-        sp6 = _decode_sp_add(data, cat + 12 + sp5[0])
-        if sp6 is None or sp6[1] != 6:
-            raise RuntimeError("thoughtBodyRows: expected `add x6, sp, #...` for Styles[+0x510]")
-        s11_off = cat + 12 + sp5[0] + sp6[0]
-        cot_fn = "render.thoughtBodyRows"
-    else:
-        b_cot_loop_off = find_unique_anchor(
-            data,
-            (s8_off, s8_off + 0x140),
-            bytes.fromhex("e2031faae3031faae4031faae5031faa"),
-            "Site 10 (stepContent CoT body loop branch)",
-        )
-        cot_loop_entry_off = decode_branch_target(data, b_cot_loop_off, 0x14000000, "Site 10 (CoT body loop)") - VM_BASE
-        s10_off = cot_loop_entry_off + 0x54
-        s11_off = cot_loop_entry_off + 0x74
-        cot_fn = "render.stepContent"
+    # 10 & 11. omit 2-space paragraph prefix & style CoT body paragraphs with Faint + Italic (\x1b[2;3m)
+    # inside render.thoughtBodyRows.
+    tbr = funcs["thoughtBodyRows"]
+    cats = _calls_to(data, tbr, funcs["concatstring2"][0])
+    if len(cats) != 1:
+        raise RuntimeError(f"thoughtBodyRows: expected one `concatstring2`, found {len(cats)}")
+    cat = cats[0]
+    if struct.unpack_from("<I", data, cat - 4)[0] not in (0xB27F03E2, 0xAA1F03E2):
+        raise RuntimeError("thoughtBodyRows: expected 2-byte prefix length before `concatstring2`")
+    s10_off = cat - 4
+    sp5 = _decode_sp_add(data, cat + 12)
+    if sp5 is None or sp5[1] != 5 or sp5[2] != 8:
+        raise RuntimeError("thoughtBodyRows: expected `add x5, sp, #8` for Style receiver")
+    sp6 = _decode_sp_add(data, cat + 12 + sp5[0])
+    if sp6 is None or sp6[1] != 6:
+        raise RuntimeError("thoughtBodyRows: expected `add x6, sp, #...` for Styles[+0x510]")
+    s11_off = cat + 12 + sp5[0] + sp6[0]
+    cot_fn = "render.thoughtBodyRows"
     s10_va = VM_BASE + s10_off
     s11_va = VM_BASE + s11_off
 
@@ -2606,19 +2585,16 @@ def _resolve_thinking_sites(data: bytes | bytearray, funcs: dict[str, tuple[int,
     site("pending-line", "model.(*ConversationModel).activityCandidate -> Thinking shows its label, not the thought",
          three[0], NOP)
 
-    # 51g. v1.5.9+ added render.isInFlightThinkingOnly: when showThinking is false (stubbed), itemRenderer.render
+    # 51g. render.isInFlightThinkingOnly: when showThinking is false (stubbed), itemRenderer.render
     # suppresses any running step that has thought without an answer yet, hiding both #51 and #53 until
     # the answer starts. Return false at entry (`mov x0, xzr; ret`) so running thoughts render live.
-    if "isInFlightThinkingOnly" in funcs:
-        inf = funcs["isInFlightThinkingOnly"][0]
-        answer_no = bytes.fromhex("e0031faac0035fd6")
-        head = bytes(data[inf : inf + 8])
-        if head != answer_no and head[:4] != bytes.fromhex("900b40f9"):  # ldr x16, [x28, #0x10]
-            raise RuntimeError("isInFlightThinkingOnly no longer opens with its stack check")
-        site("cot-rendering", "render.isInFlightThinkingOnly -> false (keep live thoughts visible while running)",
-             inf, answer_no)
-    elif "thoughtBodyRows" in funcs:
-        raise RuntimeError("v1.5.9+ binary is missing render.isInFlightThinkingOnly; check itemRenderer.render")
+    inf = funcs["isInFlightThinkingOnly"][0]
+    answer_no = bytes.fromhex("e0031faac0035fd6")
+    head = bytes(data[inf : inf + 8])
+    if head != answer_no and head[:4] != bytes.fromhex("900b40f9"):  # ldr x16, [x28, #0x10]
+        raise RuntimeError("isInFlightThinkingOnly no longer opens with its stack check")
+    site("cot-rendering", "render.isInFlightThinkingOnly -> false (keep live thoughts visible while running)",
+         inf, answer_no)
     return tuple(sites)
 
 
@@ -2880,25 +2856,19 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
     full, live = branch_target(word(gate - 4), gate - 4), gate + 4
 
     # The full branch: `cbz x10; cbnz x8; ...; cmp w12, #1; b.ls bail; cmp w11, #8; b.eq bail;
-    # cmp w11, #0xb; b.eq bail` (out-of-line bail in v1.5.8) or `cmp w11, #0xb; b.ne after_bail`
-    # falling through into inline `bail` at `full + 0x34` (v1.5.9+), then the `low` test, which
-    # loads the verbosity's length: `add x27, ...; ldr x11, [x27, #len]; cmp x11, #3`.
+    # cmp w11, #0xb; b.ne after_bail` falling through into inline `bail` at `full + 0x34`, then the
+    # `low` test, which loads the verbosity's length: `add x27, ...; ldr x11, [x27, #len]; cmp x11, #3`.
     if word(full + 0x2C) != 0x71002D7F or word(full + 0x20) & 0xFF00001F != 0x54000009 \
-            or word(full + 0x28) & 0xFF00001F != 0x54000000:
+            or word(full + 0x28) & 0xFF00001F != 0x54000000 \
+            or word(full + 0x30) & 0xFF00001F != 0x54000001:
         raise RuntimeError("stepContent: the full CoT branch no longer bails out of running steps as expected")
     bail = branch_target(word(full + 0x20), full + 0x20)
-    if branch_target(word(full + 0x28), full + 0x28) != bail:
+    if branch_target(word(full + 0x28), full + 0x28) != bail or bail != full + 0x34:
         raise RuntimeError("stepContent: the full CoT branch no longer bails out of running steps in one place")
-    if word(full + 0x30) & 0xFF00001F == 0x54000000 and branch_target(word(full + 0x30), full + 0x30) == bail:
-        bails = [full + 0x20, full + 0x28, full + 0x30]
-        after_bail = full + 0x34
-    elif word(full + 0x30) & 0xFF00001F == 0x54000001 and bail == full + 0x34:
-        bails = [full + 0x20, full + 0x28]
-        after_bail = branch_target(word(full + 0x30), full + 0x30)
-        if after_bail < bail + 0x14:
-            raise RuntimeError("stepContent: inline running-step bail-out is too small for Site #53c")
-    else:
-        raise RuntimeError("stepContent: the full CoT branch no longer bails out of running steps in one place")
+    bails = [full + 0x20, full + 0x28]
+    after_bail = branch_target(word(full + 0x30), full + 0x30)
+    if after_bail < bail + 0x14:
+        raise RuntimeError("stepContent: inline running-step bail-out is too small for Site #53c")
     if word(after_bail + 0x8) != 0xF1000D7F or word(after_bail + 0x4) & 0xFFC003FF != 0xF940036B:
         raise RuntimeError("stepContent: the full CoT branch no longer loads the verbosity")
     verb_len = (word(after_bail), word(after_bail + 0x4))  # x11 = len(verbosity)
@@ -2911,10 +2881,10 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
         raise RuntimeError("stepContent: the expanded test is no longer `tbz w3, #0` (an old patch with Site #8?)")
     span, expanded = branch_target(word(s8), s8), s8 + 4
 
-    # v1.5.9+ also tests `expanded` inside the live branch (`add x27, sp, ...; ldrb wR, [x27, #exp];
-    # tbz wR, #0, one_liner`) to show a `"▾ Thinking  (Ns)\n" + thoughtBodyRows` block on `ctrl+o`.
-    # Redirecting that expanded fall-through to `bail` (#53c) gives `ctrl+o` the same headerless growing
-    # block that `high` renders, closing in place with the `∴ Thought for ...` line (#53d).
+    # The live branch also tests `expanded` (`add x27, sp, ...; ldrb wR, [x27, #exp]; tbz wR, #0, one_liner`)
+    # to show a `"▾ Thinking  (Ns)\n" + thoughtBodyRows` block on `ctrl+o`. Redirecting that expanded
+    # fall-through to `bail` (#53c) gives `ctrl+o` the same headerless growing block that `high` renders,
+    # closing in place with the `∴ Thought for ...` line (#53d).
     if word(s8 - 8) & 0xFF8003FF != 0x910003FB or word(s8 - 4) & 0xFFC003E0 != 0x39400360:
         raise RuntimeError("stepContent: the expanded flag is no longer loaded via `add x27, sp, ...; ldrb wR, [x27, ...]`")
     exp_hi, exp_ld = word(s8 - 8), word(s8 - 4) & ~0x1F
@@ -2923,18 +2893,15 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
         if w == exp_hi and (word(o + 4) & ~0x1F) == exp_ld
         and (word(o + 8) & 0xFFF8001F) == (0x36000000 | (word(o + 4) & 0x1F))
     ]
-    if "thoughtBodyRows" in funcs:
-        if len(live_exps) != 1:
-            raise RuntimeError(f"stepContent: expected one expanded check in the live CoT branch, found {len(live_exps)}")
-    elif live_exps:
-        raise RuntimeError("stepContent: unexpected expanded check in the live CoT branch without thoughtBodyRows")
-    live_exp = live_exps[0] if live_exps else None
-    if live_exp is not None and branch_target(word(live_exp), live_exp) != bail:
+    if len(live_exps) != 1:
+        raise RuntimeError(f"stepContent: expected one expanded check in the live CoT branch, found {len(live_exps)}")
+    live_exp = live_exps[0]
+    if branch_target(word(live_exp), live_exp) != bail:
         one_liner = branch_target(word(live_exp - 4), live_exp - 4)
         if one_liner is None or one_liner <= live_exp or entered_from_outside(live_exp - 4, one_liner, sc):
             raise RuntimeError("stepContent: the live expanded CoT branch is entered from elsewhere")
 
-    expected_bails = sorted([*bails, *(live_exps if live_exp is not None and branch_target(word(live_exp), live_exp) == bail else ())])
+    expected_bails = sorted([*bails, *(live_exps if branch_target(word(live_exp), live_exp) == bail else ())])
     if {s for o in range(sc[0], sc[1], 4) if (s := branch_target(word(o), o)) is not None and bail <= s < bail + 0x14} != {bail} \
             or [o for o in range(sc[0], sc[1], 4) if branch_target(word(o), o) == bail] != expected_bails:
         raise RuntimeError("stepContent: the running-step bail-out is reached from elsewhere")
@@ -3019,9 +2986,8 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
          pack(word(j + 0x24), st_ptr | 31, word(j + 0x04), st_len | 31) + encode_b(v(bail + 16), v(body)))
     site("render.stepContent -> the CoT block is body, then its `∴ Thought for` line", j + 0x08,
          pack(hlen, word(j + 0x0C), word(j + 0x10), word(j + 0x14), 0xAA0103E2, 0xAA0003E1, word(j + 0x20), word(j + 0x24), hptr))
-    if live_exp is not None:
-        site("render.stepContent -> an expanded running thought uses the headerless full block", live_exp,
-             encode_b(v(live_exp), v(bail)))
+    site("render.stepContent -> an expanded running thought uses the headerless full block", live_exp,
+         encode_b(v(live_exp), v(bail)))
     site("render.stepContent -> a collapsed thought under `high` expands; else its header is `∴ <header>`", span, collapsed)
     site("render.stepContent -> the collapsed header's `Sprintf` becomes `concatstring2`", hdr_call,
          encode_bl(v(hdr_call), VM_BASE + funcs["concatstring2"][0]))

@@ -50,7 +50,7 @@ if [[ "$*" == *"--hub"* || ( "${1:-}" == "acp" && "${AGY_ACP_GATEWAY:-0}" == "1"
   exec $agy_bin "$@"
 fi
 
-# Legacy `--settings '{"modelProvider":"gemini"}'` CLI invocations: clear modelProvider so agy stays
+# `--settings '{"modelProvider":"gemini"}'` CLI gateway selector: clear modelProvider so agy stays
 # on modelapiccpa (preserving native keepalive + AGY_LLM_GATEWAY_MODELS) instead of switching to the
 # static geminiapi client. Set AGY_LOCAL_GATEWAY=off to keep raw geminiapi behavior.
 gemini_provider_re='"modelProvider"[[:space:]]*:[[:space:]]*"gemini"'

@@ -89,10 +89,12 @@ fi
 # ─── 2. Stateful TPS & Cache TTL Engine ───────────────────────────────────────
 local STATE_FILE="/tmp/agy_telemetry_${SESSION_ID//[^a-zA-Z0-9_-]/_}.dat"
 local CONV_DB="${HOME}/.gemini/antigravity-cli/conversations/${SESSION_ID}.db"
-local PREV_STATE="idle" START_TIME=$NOW BASE_OUT=$TOT_OUT LAST_TPS="--" STEP_LAT="--" LAST_DELTA=0 _LEGACY_MODEL="" _LEGACY_KEY="" CACHE_TS=0
+local PREV_STATE="idle" START_TIME=$NOW BASE_OUT=$TOT_OUT LAST_TPS="--" STEP_LAT="--" LAST_DELTA=0 CACHE_TS=0
 
 if [[ -f "$STATE_FILE" ]]; then
-  read -r PREV_STATE START_TIME BASE_OUT LAST_TPS STEP_LAT LAST_DELTA _LEGACY_MODEL _LEGACY_KEY CACHE_TS < "$STATE_FILE" 2>/dev/null || true
+  local _SL_TAIL=""
+  read -r PREV_STATE START_TIME BASE_OUT LAST_TPS STEP_LAT LAST_DELTA _SL_TAIL < "$STATE_FILE" 2>/dev/null || true
+  CACHE_TS="${_SL_TAIL##* }"
   [[ "$START_TIME" == <->* ]]      || START_TIME=$NOW
   [[ "$BASE_OUT" == <-> ]]         || BASE_OUT=$TOT_OUT
   [[ "$LAST_DELTA" == <-> ]]       || LAST_DELTA=0
@@ -163,7 +165,7 @@ if (( KA_PACKED > 0 )); then
   (( KA_TS > 0 )) && CACHE_TS=$KA_TS
 fi
 
-print -r -- "$STATE $START_TIME $BASE_OUT $LAST_TPS $STEP_LAT $LAST_DELTA - - $CACHE_TS" >| "$STATE_FILE" 2>/dev/null || true
+print -r -- "$STATE $START_TIME $BASE_OUT $LAST_TPS $STEP_LAT $LAST_DELTA $CACHE_TS" >| "$STATE_FILE" 2>/dev/null || true
 
 # ─── 3. Adaptive Dark/Light Mode Detection (5s Cache TTL) ─────────────────────
 local THEME_MODE="${AGY_THEME:-}"

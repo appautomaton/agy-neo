@@ -20,7 +20,7 @@ elapsed seconds masked. A pty cannot be opened inside the Claude Code sandbox; r
     python3 probe_agy.py wire  --binary /tmp/agy-new/agy
     python3 probe_agy.py tui   --binary ~/.local/bin/agy --out /tmp/tui-old
     python3 probe_agy.py tui   --binary /tmp/agy-new/agy --out /tmp/tui-new --against /tmp/tui-old
-    python3 probe_agy.py sites ~/.local/bin/agy.v1.5.7.orig /tmp/agy-new/agy.v1.5.8.orig
+    python3 probe_agy.py sites ~/.local/bin/agy.v1.5.11.orig /tmp/agy-new/agy.v1.5.12.orig
 """
 
 from __future__ import annotations

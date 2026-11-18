@@ -87,11 +87,9 @@
   "9229990291334ba4"
  ],
  "model.SelectorModel.offersContextWindow -> admit Gemini 4 *": [
-  "205a1fd35ddce402",
   "41c0847c9e19ecd8"
  ],
  "model.SelectorModel.offersContextWindow -> return true": [
-  "4d17e16971e33181",
   "11b1de4386a362bb"
  ],
  "model.SelectorModel.offersContextWindow -> whitelist miss enters extra-model matcher": [
@@ -141,9 +139,6 @@
  ],
  "render.RenderBackgroundCommandOutput @+0x80 -> `⋆`": [
   "00301e07eb8dfd89"
- ],
- "render.RenderSubagentItem @+0x5c -> `⋆`": [
-  "8cb21e01aac21050"
  ],
  "render.RenderSubagentItem @+0x64 -> `⋆`": [
   "8cb21e01aac21050"
@@ -235,37 +230,16 @@
  "render.resolveStyles -> terminal mouse selection highlight native Reverse (\\x1b[7m)": [
   "883e32a493012602"
  ],
- "render.semanticMilestoneLines @+0x404 -> `⊹`": [
-  "00301e07eb8dfd89"
- ],
  "render.semanticMilestoneLines @+0x408 -> `⊹`": [
-  "00301e07eb8dfd89"
- ],
- "render.semanticMilestoneLines @+0x980 -> `⋆`": [
-  "00301e07eb8dfd89"
- ],
- "render.semanticMilestoneLines @+0x990 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.semanticMilestoneLines @+0x994 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
- "render.semanticMilestoneLines @+0x9e8 -> `⋆`": [
-  "00301e07eb8dfd89"
- ],
- "render.semanticMilestoneLines @+0x9f8 -> `⋆`": [
-  "00301e07eb8dfd89"
- ],
  "render.semanticMilestoneLines @+0x9fc -> `⋆`": [
   "00301e07eb8dfd89"
  ],
- "render.statusMarker @+0x160 -> `⋆`": [
-  "00301e07eb8dfd89"
- ],
  "render.statusMarker @+0x168 -> `⋆`": [
-  "00301e07eb8dfd89"
- ],
- "render.statusMarker @+0xf4 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.statusMarker @+0xfc -> `⋆`": [
@@ -292,14 +266,8 @@
  "render.stepContent -> mutate CoT header `▾ Thought...` to `∴ Thought...`": [
   "d04e3cf1d7f67001"
  ],
- "render.stepContent -> omit 2-space leading indent on CoT body paragraphs": [
-  "aa6c0275e6ac3f70"
- ],
  "render.stepContent -> outside `high`, the CoT header leaves out the token count": [
   "10cafc2de9cb45b9"
- ],
- "render.stepContent -> style CoT body paragraphs with Faint + Italic (\\x1b[2;3m)": [
-  "10662bcda4dbeffc"
  ],
  "render.stepContent -> the CoT block is body, then its `∴ Thought for` line": [
   "502fe14213700ba3"
@@ -331,25 +299,13 @@
  "render.thoughtBodyRows -> style CoT body paragraphs with Faint + Italic (\\x1b[2;3m)": [
   "10662bcda4dbeffc"
  ],
- "render.toolMarker @+0x110 -> `⋆`": [
-  "00301e07eb8dfd89"
- ],
  "render.toolMarker @+0x11c -> `⋆`": [
-  "00301e07eb8dfd89"
- ],
- "render.toolMarker @+0x1a4 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.toolMarker @+0x1b0 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
- "render.toolMarker @+0x210 -> `⋆`": [
-  "00301e07eb8dfd89"
- ],
  "render.toolMarker @+0x21c -> `⋆`": [
-  "00301e07eb8dfd89"
- ],
- "render.toolMarker @+0x27c -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.toolMarker @+0x288 -> `⋆`": [
@@ -382,13 +338,7 @@
  "render.workflowCallRow @+0xac -> `⋆`": [
   "00301e07eb8dfd89"
  ],
- "render.workflowMarker @+0x16c -> `⋆`": [
-  "00301e07eb8dfd89"
- ],
  "render.workflowMarker @+0x174 -> `⋆`": [
-  "00301e07eb8dfd89"
- ],
- "render.workflowMarker @+0x1d8 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.workflowMarker @+0x1e0 -> `⋆`": [

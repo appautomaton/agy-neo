@@ -18,9 +18,9 @@ originals, dump them locally (`--dump`, or capture_prompt.py into `templates/v<v
 which git ignores).
 
 Run directly to print one template, or dump every embedded template:
-    python3 prompt_templates.py identity.tmpl [--binary ~/.local/bin/agy.v1.5.3.orig]
-    python3 prompt_templates.py --dump $TMPDIR/templates --binary ~/.local/bin/agy.v1.5.3.orig
-    python3 prompt_templates.py skills.tmpl --digest --binary ~/.local/bin/agy.v1.5.8.orig
+    python3 prompt_templates.py identity.tmpl [--binary ~/.local/bin/agy.v1.5.11.orig]
+    python3 prompt_templates.py --dump $TMPDIR/templates --binary ~/.local/bin/agy.v1.5.11.orig
+    python3 prompt_templates.py skills.tmpl --digest --binary ~/.local/bin/agy.v1.5.11.orig
 """
 
 from __future__ import annotations
