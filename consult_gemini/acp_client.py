@@ -123,8 +123,8 @@ class AcpClient:
     async def _start_locked(self) -> None:
         await self.stop()
         env = dict(os.environ)
-        # Disable background cache_relay.py touches for MCP; native 5m implicit cache covers immediate follow-ups.
-        env["AGY_CACHE_RELAY"] = "off"
+        # Disable background idle keepalive touches for headless MCP calls unless explicitly overridden.
+        env.setdefault("AGY_CACHE_MAX_TOUCHES", "0")
         # Route through the local CLIProxyAPI gateway (hub-wrapper.sh), not Cloud Code. The picker then
         # offers AGY_LLM_GATEWAY_MODELS base IDs (gemini-4-carbon, gemini-4-argon, gemini-3.8-flash);
         # AGY_ACP_GATEWAY=0 in the caller's environment restores Cloud Code.

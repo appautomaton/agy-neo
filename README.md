@@ -68,10 +68,10 @@ from where they are, and only the installed files keep fixed places: the binary 
 3. Add to `~/.zshrc`, then open a new shell:
    ```sh
    export AGY_CLI_DISABLE_AUTO_UPDATE=true   # the updater accepts only the exact string `true`
-   alias agy="$HOME/.gemini/bin/agy"         # through the wrapper: cache relay, gateway routing
+   alias agy="$HOME/.gemini/bin/agy"         # through the wrapper: keepalive policy, gateway routing
    ```
    Without the export, a background update replaces the patched binary. Without the alias, `agy`
-   runs patched but without the cache relay or the gateway settings.
+   still runs native 4-touch keepalive, without `agy-neo.conf` overrides or gateway routing.
 4. Turn the status line on in `~/.gemini/antigravity-cli/settings.json`:
    ```json
    "statusLine": {"type": "command", "command": "~/.gemini/antigravity-cli/statusline.sh", "enabled": true}
@@ -112,8 +112,8 @@ changing it. Delete the previous version's `.orig` once the new one is verified.
 | [`inspect_agy.py`](./inspect_agy.py) | Finds Go symbols, call graphs and string literals in the binary; dumps the TUI's palette and styles. |
 | [`capture_prompt.py`](./capture_prompt.py), [`prompt_templates.py`](./prompt_templates.py) | Record the exact prompt `agy` sends, and check and edit its templates against the binary. |
 | [`templates/v<ver>/`](./templates/v1.5.10/README.md) | The templates we change in one release, each with its reason and the digest of Google's original. Google's own text stays local (`stock/`, git-ignored). |
-| [`hub-wrapper.sh`](./hub-wrapper.sh) | The wrapper installed as `~/.gemini/bin/agy`: gateway routing, the VS Code `--hub`, the cache relay. |
-| [`agy-neo.conf`](./agy-neo.conf), [`cache_relay.py`](./cache_relay.py), [`statusline.sh`](./statusline.sh) | The prompt cache keepalive policy (`~/.gemini/antigravity-cli/agy-neo.conf`), its loopback relay, and the status line that drives and shows it. |
+| [`hub-wrapper.sh`](./hub-wrapper.sh) | The wrapper installed as `~/.gemini/bin/agy`: unified `AGY_LLM_GATEWAY_*` routing for CLI and VS Code `--hub`, plus `agy-neo.conf` env export. |
+| [`agy-neo.conf`](./agy-neo.conf), [`statusline.sh`](./statusline.sh) | The native prompt-cache keepalive policy (`~/.gemini/antigravity-cli/agy-neo.conf`) and the status line that reads in-process `StatusLineData.CacheKeepalive` telemetry. |
 | [`consult_gemini_mcp.py`](./consult_gemini_mcp.py) | An MCP server that lets Claude Code consult Gemini through one shared `agy acp` process. |
 | [`assets/`](./assets) | The README's picture, drawn by `make_hero.py` from the patch's own frames and colors. |
 | [`diagnostics/`](./diagnostics) | Investigations and probes kept for reference: upstream 400s, cache lifetime. |

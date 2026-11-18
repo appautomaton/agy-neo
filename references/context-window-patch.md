@@ -264,6 +264,23 @@ From there the existing path runs: the OSC 11 reply becomes a `BackgroundColorMs
 
 ---
 
+### 4.9 Unified Native Prompt-Cache Keepalive & Telemetry (`cache-keepalive`, 18 sites)
+
+`agy` ships an in-process prompt-cache keepalive state machine in `language_server/modelapiccpa.(*keepAlives)`: on every main cascade turn (`requestType == 5`), `onPromptRead` stamps `refreshedAt` as soon as prefill usage arrives and schedules a `4m30s` (`270s`) timer that replays the conversation with `maxOutputTokens: 1` (`-keepalive-<n>`), halting automatically once `pingsLeft` reaches zero or if a ping misses cache (`CacheReadTokens <= InputTokens + CacheWriteTokens`). Three stock barriers prevented using it across OAuth and a local CLIProxyAPI gateway:
+
+1. **Mendel gate & nil FeatureProvider**: `modelapiccpa.(*Client).Generate` skips `keepAlivePings` when `featureProviderResolver` or `FeatureProvider` is `nil` (Enterprise Gateway mode), and `keepAlivePings` requires the cloud Mendel flag `cascade_enable_keep_alive`.
+2. **Gateway `SessionId` clearing & `trimLastBlock`**: `StreamGenerateContentFromGateway` and `GenerateContentFromGateway` zero `GenerateContentRequest.SessionId` after `setToolResultRoleToUser`, breaking upstream account affinity on CLIProxyAPI, while `(*keepAlives).beforeRequest` calls `trimLastBlock` to overwrite the last user/tool block with `"."`, dropping trailing tool outputs from the warmed prefix.
+3. **Opaque timer state**: `keepAlives` keeps `refreshedAt`, `pingsSent`, and `pingsLeft` inside private Go heap structs, invisible to `statusline.sh`.
+
+The `cache-keepalive` group patches the native engine directly so no external HTTP replay proxy is needed:
+
+- **Gateway `SessionId` affinity (`2` sites, `8` bytes)**: Turns `cbz x0, <after_zero>` into `b <after_zero>` after `bl setToolResultRoleToUser` in `StreamGenerateContentFromGateway` and `GenerateContentFromGateway`, keeping `SessionId` intact on main turns and keepalive pings.
+- **Unconditional `keepAlivePings` & `AGY_CACHE_MAX_TOUCHES` (`3` sites, `108` bytes)**: Routes both `nil`-provider guards in `modelapiccpa.(*Client).Generate` (zeroing dead pointer spill slots) into `keepAlivePings`, and rebuilds `keepAlivePings` in place—keeping `bl os.Getenv` at stock call PC `+0x38`—to parse `AGY_CACHE_MAX_TOUCHES` (`4` when unset, `0` when `"0"`/`"off"`/`"false"`, or `1..99`).
+- **Main-session isolation & full prefix preservation (`2` sites, `8` bytes)**: Skips `keepAlives` registration in `beforeRequest` when `parent_cascade_id` is set (so finished `worker` subagents never fire orphan touches or clobber main-session telemetry), and replaces `bl trimLastBlock` with `nop`, preserving 100% of the prompt prefix and freeing all `608` bytes of `trimLastBlock` in `__text` as a leaf helper and read-only constant cave.
+- **Zero-allocation in-process telemetry (`11` sites, `520` bytes)**: Reserves two adjacent unused `uint64` globals (`16` bytes) from `halloween.init` in GC-unscanned `__noptrbss` (`g_hash` packing 32-bit trajectory and `SessionID` FNV-1a hashes; `g_val` packing a 52-bit IEEE-754-exact integer `(state << 50) | (pingsLeft << 42) | (pingsSent << 34) | refreshedUnixSec`), hooks the post-epilogue `ret` sites of `scheduleNextPingLocked`, `ping` (`mapdelete_faststr` exits), and `stopLocked`, maps the unused trailing `+0x148` slot of `types.StatusLineData` (`statusLineDataInternal`) to `CacheKeepalive int` (`json:"cache_keepalive,omitempty"`), and populates it on `store.BuildStatusLineData` return.
+
+---
+
 ## 5. Authoring Pitfalls
 
 ### 5.1 Hand-assembled hex (2026-11-08 crash)

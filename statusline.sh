@@ -13,7 +13,7 @@ local NOW=$EPOCHREALTIME
 integer NOW_SEC=${EPOCHSECONDS:-${NOW%.*}}
 
 # ─── 1. Single-Pass jq Extraction (ASCII \x1f Unit Separator) ─────────────────
-local SESSION_ID STATE CYCLE_MODE PERM_MODE MODEL_ID MODEL_DISPLAY EFFORT CWD TRANSCRIPT_PATH BRANCH DIRTY SBX_ON USED_PCT TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K COST_USD SUB_USD QUOTA_PCT SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING
+local SESSION_ID STATE CYCLE_MODE PERM_MODE MODEL_ID MODEL_DISPLAY EFFORT CWD TRANSCRIPT_PATH BRANCH DIRTY SBX_ON USED_PCT TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K COST_USD SUB_USD QUOTA_PCT SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING CACHE_PACKED
 
 jq -r '
   [
@@ -56,13 +56,14 @@ jq -r '
     (.task_count // 0 | tonumber? // 0),
     (.artifact_count // 0 | tonumber? // 0),
     (.pending_input_count // 0 | tonumber? // 0),
-    (if .tool_confirmation_pending == true then "true" else "false" end)
+    (if .tool_confirmation_pending == true then "true" else "false" end),
+    (.cache_keepalive // 0 | tonumber? // 0)
   ] | map(tostring) | join("\u001f")
 ' 2>/dev/null | IFS=$'\x1f' read -r \
   SESSION_ID STATE CYCLE_MODE PERM_MODE MODEL_ID MODEL_DISPLAY EFFORT CWD TRANSCRIPT_PATH BRANCH DIRTY SBX_ON \
   USED_PCT TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K \
   COST_USD SUB_USD QUOTA_PCT \
-  SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING || exit 0
+  SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING CACHE_PACKED || exit 0
 
 [[ -z "${SESSION_ID:-}" ]] && exit 0
 [[ "$CYCLE_MODE" == "-" ]]    && CYCLE_MODE=""
@@ -148,15 +149,18 @@ if (( CACHE_TS == 0 && TOT_OUT > 0 )); then
   (( CACHE_TS == 0 )) && CACHE_TS=$NOW_SEC
 fi
 
-# Under cache_relay.py, the relay's record of the last real or replayed upstream request
-# is authoritative: it excludes subagent traffic, so a parent waiting on a long subagent
-# or tool run counts down truthfully instead of being reset on every non-idle tick.
-local RELAY_FILE="/tmp/agy_cache_${SESSION_ID//[^a-zA-Z0-9_-]/_}.dat"
-local RELAY_TS=0 RELAY_TOUCHES=0 RELAY_STATUS=""
-if [[ "${AGY_CACHE_RELAY:-}" == http://* && -r "$RELAY_FILE" ]]; then
-  read -r RELAY_TS RELAY_TOUCHES RELAY_STATUS < "$RELAY_FILE" 2>/dev/null || true
-  [[ "$RELAY_TS" == <-> ]] && (( RELAY_TS > 0 )) && CACHE_TS=$RELAY_TS
-  [[ "$RELAY_TOUCHES" == <-> ]] || RELAY_TOUCHES=0
+# Native modelapiccpa.(*keepAlives) in-process telemetry packed into 52-bit StatusLineData.CacheKeepalive:
+# bits 0..33 = refreshedAt Unix seconds, bits 34..41 = touches sent, bits 42..49 = pings left,
+# bits 50..51 = state (1=live, 2=exhausted after final touch, 3=failed/cold).
+# Excludes non-main subagent turns, so long tool or subagent runs count down truthfully from prefill.
+integer KA_PACKED=0 KA_STATE=0 KA_LEFT=0 KA_TOUCHES=0 KA_TS=0
+[[ "${CACHE_PACKED:-}" == <-> ]] && KA_PACKED=$CACHE_PACKED
+if (( KA_PACKED > 0 )); then
+  KA_TS=$(( KA_PACKED & 0x3ffffffff ))
+  KA_TOUCHES=$(( (KA_PACKED >> 34) & 0xff ))
+  KA_LEFT=$(( (KA_PACKED >> 42) & 0xff ))
+  KA_STATE=$(( (KA_PACKED >> 50) & 0x3 ))
+  (( KA_TS > 0 )) && CACHE_TS=$KA_TS
 fi
 
 print -r -- "$STATE $START_TIME $BASE_OUT $LAST_TPS $STEP_LAT $LAST_DELTA - - $CACHE_TS" >| "$STATE_FILE" 2>/dev/null || true
@@ -647,53 +651,30 @@ parse_duration_sec() {
 }
 
 local NEO_CONF="${AGY_NEO_CONFIG:-${HOME}/.gemini/antigravity-cli/agy-neo.conf}"
-local CACHE_RELAY="on" CACHE_KEEPALIVE="on" CACHE_TTL="5m" CACHE_REFRESH_AT="4m30s"
-local CACHE_MAX_TOUCHES="4" CACHE_MIN_TOKENS="32000" CACHE_MODELS="argon,carbon,hydrogen"
+local CACHE_KEEPALIVE="on" CACHE_TTL="5m" CACHE_MAX_TOUCHES="4"
 [[ -r "$NEO_CONF" ]] && source "$NEO_CONF" 2>/dev/null || true
 
 local KEEPALIVE_RAW="${AGY_CACHE_KEEPALIVE:-$CACHE_KEEPALIVE}"
 integer KEEPALIVE_ON=1
 [[ "${KEEPALIVE_RAW:l}" == (0|false|off|no) ]] && KEEPALIVE_ON=0
+[[ "${AGY_CACHE_MAX_TOUCHES:-$CACHE_MAX_TOUCHES}" == "0" ]] && KEEPALIVE_ON=0
 
 integer REPLY=0
 parse_duration_sec "${AGY_CACHE_TTL:-$CACHE_TTL}" 300
 integer CACHE_TTL_SEC=$REPLY
 (( CACHE_TTL_SEC < 30 )) && CACHE_TTL_SEC=30
 
-parse_duration_sec "${AGY_CACHE_REFRESH_AT:-$CACHE_REFRESH_AT}" 270
-integer CACHE_REFRESH_AT_SEC=$REPLY
-(( CACHE_REFRESH_AT_SEC < 15 )) && CACHE_REFRESH_AT_SEC=15
-(( CACHE_REFRESH_AT_SEC > CACHE_TTL_SEC - 15 )) && CACHE_REFRESH_AT_SEC=$(( CACHE_TTL_SEC - 15 ))
-
-local MAX_TOUCHES_RAW="${AGY_CACHE_MAX_TOUCHES:-$CACHE_MAX_TOUCHES}"
-integer CACHE_MAX_TOUCHES_VAL=4
-[[ "$MAX_TOUCHES_RAW" == <-> ]] && CACHE_MAX_TOUCHES_VAL=$MAX_TOUCHES_RAW
-
-local MIN_TOKENS_RAW="${AGY_CACHE_MIN_TOKENS:-$CACHE_MIN_TOKENS}"
-integer CACHE_MIN_TOKENS_VAL=32000
-[[ "$MIN_TOKENS_RAW" == <-> ]] && CACHE_MIN_TOKENS_VAL=$MIN_TOKENS_RAW
-
 if (( CACHE_TS > 0 )); then
   integer CACHE_ELAPSED=$(( NOW_SEC - CACHE_TS ))
   integer CACHE_REM=$(( CACHE_TTL_SEC - CACHE_ELAPSED ))
-  # Keepalive: once CACHE_ELAPSED reaches CACHE_REFRESH_AT_SEC (default 4m30s, leaving a 15-30s
-  # buffer on the 15s idle tick before the 5m cliff), ask the relay to replay the last request.
-  # Each costs a cache read of the prompt plus ~100 thought tokens; the relay serializes touches,
-  # caps them at CACHE_MAX_TOUCHES_VAL per idle stretch, and stops on any failure.
-  if (( KEEPALIVE_ON )) && [[ "$RELAY_STATUS" == live && "${AGY_CACHE_RELAY:-}" == http://* ]] &&
-     (( CACHE_REM > 0 && CACHE_ELAPSED >= CACHE_REFRESH_AT_SEC &&
-        TOT_PROMPT >= CACHE_MIN_TOKENS_VAL && RELAY_TOUCHES < CACHE_MAX_TOUCHES_VAL )); then
-    /usr/bin/curl -sS -m 120 -X POST "${AGY_CACHE_RELAY}/_touch/${SESSION_ID}" \
-      </dev/null >/dev/null 2>&1 &!
-  fi
-  # Keepalive marker: ↻ while armed, ↻n after n touches, ✗ once a touch has failed; hidden when off.
+  # Keepalive marker: ↻ while armed, ↻n after n touches, ✗ if a touch missed cache or errored.
   local KEEP_MARK=""
-  if (( KEEPALIVE_ON )); then
-    if [[ "$RELAY_STATUS" == fail ]]; then
+  if (( KEEPALIVE_ON && KA_STATE > 0 )); then
+    if (( KA_STATE == 3 )); then
       KEEP_MARK=" ✗"
-    elif [[ "$RELAY_STATUS" == live ]] && (( RELAY_TOUCHES > 0 || (CACHE_MAX_TOUCHES_VAL > 0 && TOT_PROMPT >= CACHE_MIN_TOKENS_VAL) )); then
+    elif (( KA_STATE == 1 || (KA_STATE == 2 && KA_TOUCHES > 0) )); then
       KEEP_MARK=" ↻"
-      (( RELAY_TOUCHES > 0 )) && KEEP_MARK+="$RELAY_TOUCHES"
+      (( KA_TOUCHES > 0 )) && KEEP_MARK+="$KA_TOUCHES"
     fi
   fi
   if (( CACHE_REM > 0 )); then

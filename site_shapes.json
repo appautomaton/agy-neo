@@ -5,8 +5,20 @@
  "TrajectoryChatConverter.getMaxTokensForStep -> disable 64K USER_INPUT clamp": [
   "6e33c558093fb377"
  ],
+ "codeassistclient.(*CodeAssistClient).GenerateContentFromGateway -> preserve GenerateContentRequest.SessionId on gateway requests": [
+  "e9e3926da1f8c28b"
+ ],
+ "codeassistclient.(*CodeAssistClient).StreamGenerateContentFromGateway -> preserve GenerateContentRequest.SessionId on gateway requests": [
+  "e9e3926da1f8c28b"
+ ],
  "config.applyFeatureProviderCheckpointOverrideConfig -> zero expCp.MaxTokenLimit": [
   "8db83f9833aba2f0"
+ ],
+ "halloween.init -> reserve __noptrbss uint64 (packed telemetry)": [
+  "c9ecc984c52e940d"
+ ],
+ "halloween.init -> reserve __noptrbss uint64 (session hash)": [
+  "c9ecc984c52e940d"
  ],
  "halloween.init.0 -> Halloween is not registered (its logo rows hold the spinner frames)": [
   "c9ecc984c52e940d"
@@ -87,6 +99,42 @@
  ],
  "model.compactingLabel -> elapsedSuffix(m, pad): ` (8s ⋅ thinking)`, faint, of the time since the start": [
   "2a39830d19abab52"
+ ],
+ "modelapiccpa.(*Client).Generate -> route nil FeatureProvider through keepAlivePings": [
+  "5098056eaa9c4f98"
+ ],
+ "modelapiccpa.(*Client).Generate -> route nil featureProviderResolver through keepAlivePings": [
+  "8a3d27cb723de7a9"
+ ],
+ "modelapiccpa.(*keepAlives).beforeRequest -> skip keepalive on all subagents (parent_cascade_id set)": [
+  "698b5cb1b7d44800"
+ ],
+ "modelapiccpa.(*keepAlives).beforeRequest -> skip trimLastBlock to preserve full prompt prefix": [
+  "c9ecc984c52e940d"
+ ],
+ "modelapiccpa.(*keepAlives).ping -> publish exhausted keepalive telemetry": [
+  "7db5b4a2d055855e"
+ ],
+ "modelapiccpa.(*keepAlives).ping -> publish failed #1 keepalive telemetry": [
+  "7db5b4a2d055855e"
+ ],
+ "modelapiccpa.(*keepAlives).ping -> publish failed #3 keepalive telemetry": [
+  "7db5b4a2d055855e"
+ ],
+ "modelapiccpa.(*keepAlives).ping -> publish failed #4 keepalive telemetry": [
+  "7db5b4a2d055855e"
+ ],
+ "modelapiccpa.(*keepAlives).scheduleNextPingLocked -> publish live keepalive telemetry": [
+  "7db5b4a2d055855e"
+ ],
+ "modelapiccpa.(*keepAlives).stopLocked -> clear keepalive telemetry on stop": [
+  "7db5b4a2d055855e"
+ ],
+ "modelapiccpa.keepAlivePings -> read AGY_CACHE_MAX_TOUCHES (default 4, 0 disables)": [
+  "87b3e811b03d5ed7"
+ ],
+ "modelapiccpa.trimLastBlock -> keepalive telemetry helpers and CacheKeepalive abi.Name": [
+  "55d019ab133d8f8b"
  ],
  "render.RenderBackgroundCommandOutput @+0x20 -> `⋆`": [
   "00301e07eb8dfd89"
@@ -375,6 +423,9 @@
  ],
  "store.BuildStatusLineData -> effective context window denominator": [
   "6a5f64d12d2609b5"
+ ],
+ "store.BuildStatusLineData -> populate StatusLineData.CacheKeepalive from in-process telemetry": [
+  "7db5b4a2d055855e"
  ],
  "store.canMergeConsecutiveThoughts -> a thought never joins the tool group before it": [
   "a4da03e3835e8da3"

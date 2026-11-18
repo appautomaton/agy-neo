@@ -1,7 +1,6 @@
 #!/bin/zsh
-# Antigravity Hub wrapper for VS Code extension (google.google-antigravity)
-# Routes --hub sessions through local CLIProxyAPI (127.0.0.1:5233) while delegating
-# all binary execution to the single patched Mach-O binary at ~/.local/bin/agy.
+# Antigravity wrapper (~/.gemini/bin/agy): unified local CLIProxyAPI gateway routing
+# and native prompt-cache keepalive policy for both CLI and VS Code (--hub) sessions.
 
 # Never let a background update replace the patched binary. Extension-spawned processes
 # do not reliably inherit ~/.zshrc. The updater accepts only the exact string "true".
@@ -9,19 +8,32 @@ export AGY_CLI_DISABLE_AUTO_UPDATE=true
 
 agy_bin=$HOME/.local/bin/agy
 
-# Local gateway settings (CLIProxyAPI). The picker is pinned to built-in catalog IDs: known IDs
-# keep their "(Low|Medium|High|XHigh)" labels, so the UI groups them into effort gauges, and on
-# the wire agy sends the base model plus thinkingConfig.thinkingLevel, which CLIProxyAPI routes.
-# Hydrogen IDs are built in from agy v1.5.8. v1.5.7 knew Hydrogen from Cloud Code alone and needed
-# patch_agy.py Sites #55a-#55p, or it sent a custom model capped at a 4096-token thinking budget.
+# Load prompt-cache keepalive policy from agy-neo.conf and export AGY_CACHE_MAX_TOUCHES
+# for the patched native modelapiccpa.keepAlivePings engine in ~/.local/bin/agy.
+() {
+  local neo_conf=${AGY_NEO_CONFIG:-$HOME/.gemini/antigravity-cli/agy-neo.conf}
+  local CACHE_KEEPALIVE=on CACHE_TTL=5m CACHE_MAX_TOUCHES=4
+  [[ -r $neo_conf ]] && source $neo_conf 2>/dev/null
+  local gate=${AGY_CACHE_KEEPALIVE:-$CACHE_KEEPALIVE}
+  if [[ "${gate:l}" == (0|false|off|no) ]]; then
+    export AGY_CACHE_MAX_TOUCHES=0
+  else
+    export AGY_CACHE_MAX_TOUCHES="${AGY_CACHE_MAX_TOUCHES:-$CACHE_MAX_TOUCHES}"
+  fi
+}
+
+# Local gateway settings (CLIProxyAPI). Built-in catalog IDs keep "(Low|Medium|High|XHigh)"
+# labels for effort gauges and send base model + thinkingConfig.thinkingLevel on the wire.
+# Routing via AGY_LLM_GATEWAY_* keeps sessions on modelapiccpa -> StreamGenerateContentFromGateway,
+# unifying local gateway sessions with Google's native 4m30s prompt-cache keepalive engine.
 use_local_gateway() {
-  local gateway_env=$HOME/.gemini/agy-gateway.env  # CPA_API_KEY, plus an override for any default below
+  local gateway_env=$HOME/.gemini/agy-gateway.env
   if [[ -f $gateway_env ]]; then
     source $gateway_env 2>/dev/null
   fi
-  export GEMINI_API_KEY="${GEMINI_API_KEY:-$CPA_API_KEY}"
+  export GEMINI_API_KEY="${GEMINI_API_KEY:-${CPA_API_KEY:-}}"
   export GOOGLE_GEMINI_BASE_URL="${GOOGLE_GEMINI_BASE_URL:-http://127.0.0.1:5233}"
-  export AGY_LLM_GATEWAY_URL="${AGY_LLM_GATEWAY_URL:-http://127.0.0.1:5233}"
+  export AGY_LLM_GATEWAY_URL="${AGY_LLM_GATEWAY_URL:-$GOOGLE_GEMINI_BASE_URL}"
   export AGY_LLM_GATEWAY_API_KEY="${AGY_LLM_GATEWAY_API_KEY:-$GEMINI_API_KEY}"
   export AGY_LLM_GATEWAY_WIRE_PROTOCOL="${AGY_LLM_GATEWAY_WIRE_PROTOCOL:-genai}"
   export AGY_LLM_GATEWAY_MODELS="${AGY_LLM_GATEWAY_MODELS:-gemini-4-carbon-low,gemini-4-carbon-medium,gemini-4-carbon-high,gemini-4-argon-low,gemini-4-argon-medium,gemini-4-argon-high,gemini-4-hydrogen-low,gemini-4-hydrogen-medium,gemini-4-hydrogen-high,gemini-4-hydrogen-xhigh,gemini-3.8-flash-medium,gemini-3.8-flash-high}"
@@ -31,53 +43,28 @@ use_local_gateway() {
   export AGY_LLM_GATEWAY_TIER_PRO="${AGY_LLM_GATEWAY_TIER_PRO:-gemini-4-carbon-medium}"
 }
 
-# --hub (VS Code extension) and opted-in ACP sessions run entirely on the local gateway.
-if [[ "$*" == *"--hub"* || ( "${1:-}" == "acp" && "${AGY_ACP_GATEWAY:-0}" == "1" ) ]]; then
+# --hub (VS Code extension), opted-in ACP sessions, and explicit AGY_LOCAL_GATEWAY=on|1 sessions
+# run directly on the local gateway through modelapiccpa.
+if [[ "$*" == *"--hub"* || ( "${1:-}" == "acp" && "${AGY_ACP_GATEWAY:-0}" == "1" ) || "${AGY_LOCAL_GATEWAY:l}" == (1|true|on|yes) ]]; then
   use_local_gateway
-  if [[ "${1:-}" == "acp" ]]; then
-    exec $agy_bin "$@"
-  fi
-  exec $agy_bin --settings='{"modelProvider":"gemini"}' "$@"
+  exec $agy_bin "$@"
 fi
 
-# A session started with --settings '{"modelProvider":"gemini"}' would otherwise list the static
-# geminimodels.Catalog(), which has no Carbon. The gateway settings replace it with
-# AGY_LLM_GATEWAY_MODELS; requests still go to GOOGLE_GEMINI_BASE_URL, so the relay below keeps
-# serving them. AGY_LOCAL_GATEWAY=off keeps the static catalog.
+# Legacy `--settings '{"modelProvider":"gemini"}'` CLI invocations: clear modelProvider so agy stays
+# on modelapiccpa (preserving native keepalive + AGY_LLM_GATEWAY_MODELS) instead of switching to the
+# static geminiapi client. Set AGY_LOCAL_GATEWAY=off to keep raw geminiapi behavior.
 gemini_provider_re='"modelProvider"[[:space:]]*:[[:space:]]*"gemini"'
-if [[ "$*" =~ $gemini_provider_re && "${AGY_LOCAL_GATEWAY:-}" != off ]]; then
+if [[ "$*" =~ $gemini_provider_re && "${AGY_LOCAL_GATEWAY:l}" != (0|false|off|no) ]]; then
   use_local_gateway
-fi
-
-# Interactive and ACP sessions send Cloud Code traffic through a per-process loopback relay
-# that keeps an idle session's implicit prompt cache warm (cache_relay.py in this repo). Both read
-# CLOUD_CODE_URL. With modelProvider "gemini", GOOGLE_GEMINI_BASE_URL (CPA) is relayed too.
-# Print mode, other subcommands, CACHE_RELAY=off in agy-neo.conf (or AGY_CACHE_RELAY=off), and any
-# relay failure use direct endpoints. patch_agy.py --apply writes the repo's path here when it
-# installs this file; the source keeps the placeholder, so a copy installed by hand runs without
-# the relay.
-neo_conf=${AGY_NEO_CONFIG:-$HOME/.gemini/antigravity-cli/agy-neo.conf}
-CACHE_RELAY=on
-[[ -r $neo_conf ]] && source $neo_conf 2>/dev/null
-relay_gate=${AGY_CACHE_RELAY:-$CACHE_RELAY}
-relay_py=@AGY_NEO_REPO@/cache_relay.py
-if [[ "${relay_gate:l}" != (0|false|off|no) && -r $relay_py && ( $# -eq 0 || "$1" == -* || "$1" == "acp" ) ]] &&
-   (( ! ${argv[(I)(-p|--print|--prompt|--login|--help|-h)(|=*)]} )); then
-  # A nested agy inherits its parent's relay as GOOGLE_GEMINI_BASE_URL; chain to the original.
-  gemini_upstream=${GOOGLE_GEMINI_BASE_URL:-}
-  [[ -n $gemini_upstream && $gemini_upstream == "${AGY_CACHE_RELAY:-}" ]] && gemini_upstream=${AGY_GEMINI_UPSTREAM:-}
-  relay_args=(--parent $$)
-  [[ -n $gemini_upstream ]] && relay_args+=(--gemini-upstream "$gemini_upstream")
-  exec {relay_fd}< <(exec python3 -I $relay_py $relay_args 2>>/tmp/agy_cache_relay.log)
-  read -t 3 -u $relay_fd relay_port
-  exec {relay_fd}<&-
-  if [[ "${relay_port:-}" == <-> ]]; then
-    export AGY_CACHE_RELAY="http://127.0.0.1:$relay_port"
-    if [[ -n $gemini_upstream ]]; then
-      export AGY_GEMINI_UPSTREAM=$gemini_upstream GOOGLE_GEMINI_BASE_URL=$AGY_CACHE_RELAY
+  typeset -a rewritten_args=()
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" =~ $gemini_provider_re ]]; then
+      arg="$(printf '%s' "$arg" | sed -E 's/"modelProvider"[[:space:]]*:[[:space:]]*"gemini"/"modelProvider":""/g')"
     fi
-    CLOUD_CODE_URL="$AGY_CACHE_RELAY" exec $agy_bin "$@"
-  fi
+    rewritten_args+=("$arg")
+  done
+  exec $agy_bin "${rewritten_args[@]}"
 fi
 
 exec $agy_bin "$@"

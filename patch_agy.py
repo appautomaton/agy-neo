@@ -122,6 +122,18 @@ TARGET_SYMBOLS: dict[str, str] = {
     "halloweenInit": "google3/third_party/jetski/cli/theme/halloween/halloween.init",
     "halloweenInit0": "google3/third_party/jetski/cli/theme/halloween/halloween.init.0",
     "halloweenRunningLight": "google3/third_party/jetski/cli/theme/halloween/halloween.halloween.RunningLight",
+    "setToolResultRoleToUser": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.setToolResultRoleToUser",
+    "StreamGenerateContentFromGateway": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*CodeAssistClient).StreamGenerateContentFromGateway",
+    "GenerateContentFromGateway": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*CodeAssistClient).GenerateContentFromGateway",
+    "ccpaGenerate": "google3/third_party/jetski/language_server/modelapiccpa/modelapiccpa.(*Client).Generate",
+    "keepAlivePings": "google3/third_party/jetski/language_server/modelapiccpa/modelapiccpa.keepAlivePings",
+    "keepAlivesBeforeRequest": "google3/third_party/jetski/language_server/modelapiccpa/modelapiccpa.(*keepAlives).beforeRequest",
+    "trimLastBlock": "google3/third_party/jetski/language_server/modelapiccpa/modelapiccpa.trimLastBlock",
+    "scheduleNextPingLocked": "google3/third_party/jetski/language_server/modelapiccpa/modelapiccpa.(*keepAlives).scheduleNextPingLocked",
+    "keepAlivesPing": "google3/third_party/jetski/language_server/modelapiccpa/modelapiccpa.(*keepAlives).ping",
+    "keepAlivesStopLocked": "google3/third_party/jetski/language_server/modelapiccpa/modelapiccpa.(*keepAlives).stopLocked",
+    "osGetenv": "os.Getenv",
+    "mapdeleteFaststr": "runtime.mapdelete_faststr",
 }
 
 OPTIONAL_SYMBOLS: dict[str, str] = {
@@ -175,12 +187,11 @@ REPO = pathlib.Path(__file__).resolve().parent
 GEMINI_WRAPPER_TARGET = HOME / ".gemini/bin/agy"
 DEFAULT_BINARIES: tuple[pathlib.Path, ...] = (HOME / ".local/bin/agy", GEMINI_WRAPPER_TARGET)
 HUB_WRAPPER_SOURCE = REPO / "hub-wrapper.sh"
-WRAPPER_REPO_MARK = b"@AGY_NEO_REPO@"
 
 
 def rendered_wrapper() -> bytes:
-    """hub-wrapper.sh as installed: the repo's path, wherever it is, in place of its placeholder."""
-    return HUB_WRAPPER_SOURCE.read_bytes().replace(WRAPPER_REPO_MARK, str(REPO).encode())
+    """hub-wrapper.sh bytes for installation at ~/.gemini/bin/agy."""
+    return HUB_WRAPPER_SOURCE.read_bytes()
 STATUSLINE_SOURCE = REPO / "statusline.sh"
 STATUSLINE_TARGET = HOME / ".gemini/antigravity-cli/statusline.sh"
 AGY_NEO_CONF_SOURCE = REPO / "agy-neo.conf"
@@ -3283,6 +3294,690 @@ def _resolve_color_scheme_sites(
     )
 
 
+
+def _read_abi_name(data: bytes | bytearray, off: int) -> tuple[int, str, str]:
+    """Decode a Go `internal/abi.Name` at file offset `off` -> (hdr_flags, name, tag)."""
+    hdr = data[off]
+    pos = off + 1
+    ln = shift = 0
+    while True:
+        b = data[pos]
+        pos += 1
+        ln |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            break
+        shift += 7
+    name = bytes(data[pos : pos + ln]).decode("utf-8", "replace")
+    pos += ln
+    tag = ""
+    if hdr & 0x02:
+        tln = shift = 0
+        while True:
+            b = data[pos]
+            pos += 1
+            tln |= (b & 0x7F) << shift
+            if not (b & 0x80):
+                break
+            shift += 7
+        tag = bytes(data[pos : pos + tln]).decode("utf-8", "replace")
+    return hdr, name, tag
+
+
+def _go_types_base(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> int:
+    """Recover `moduledata.types` file offset from `tea.RequestBackgroundColor`."""
+    rbc = funcs["RequestBackgroundColor"][0]
+    bg_msg_va = decode_adrp_add(data, rbc)
+    bg_name = b"*tea.backgroundColorMsg"
+    bg_rec = [i - 2 for i in _find_all(data, bg_name) if data[i - 1] == len(bg_name)]
+    if len(bg_rec) != 1:
+        raise RuntimeError("tea.backgroundColorMsg type name not found")
+    return bg_rec[0] - struct.unpack_from("<i", data, bg_msg_va - VM_BASE + 40)[0]
+
+
+def _go_struct_type(
+    data: bytes | bytearray, star_name: str, types_base: int
+) -> tuple[int, int, int, list[tuple[int, str, int, int, int]]]:
+    """Locate a Go `abi.StructType` named `star_name` (e.g. `*types.StatusLineData`).
+
+    Returns `(desc_off, size, ptrbytes, [(slot_off, field_name, fn_va, ft_va, byte_off), ...])`.
+    """
+    raw = star_name.encode("utf-8")
+    matches = []
+    for i in _find_all(data, raw):
+        if data[i - 1] == len(raw):
+            rec = i - 2
+            noff = struct.pack("<i", rec - types_base)
+            for p in _find_all(data, noff):
+                desc = p - 40
+                if desc >= types_base and desc % 8 == 0:
+                    sz, ptrb, _, tflag, _, _, kind = struct.unpack_from("<QQIBBBB", data, desc)
+                    if (kind & 0x1F) == 25 and (tflag & 0x02):
+                        matches.append((desc, sz, ptrb))
+    if len(matches) != 1:
+        raise RuntimeError(f"Expected one struct type {star_name}, found {len(matches)}")
+    desc, sz, ptrb = matches[0]
+    _, fptr_va, flen, _ = struct.unpack_from("<QQQQ", data, desc + 48)
+    foff = fptr_va - VM_BASE
+    fields: list[tuple[int, str, int, int, int]] = []
+    for idx in range(flen):
+        slot_off = foff + idx * 24
+        fn_va, ft_va, byte_off = struct.unpack_from("<QQQ", data, slot_off)
+        _, fnm, _ = _read_abi_name(data, fn_va - VM_BASE)
+        fields.append((slot_off, fnm, fn_va, ft_va, byte_off))
+    return desc, sz, ptrb, fields
+
+
+def _noptrbss_bounds(data: bytes | bytearray) -> tuple[int, int]:
+    """Virtual address bounds `[start_va, end_va)` of Mach-O `__DATA,__noptrbss`."""
+    pos = 32
+    for _ in range(struct.unpack_from("<I", data, 16)[0]):
+        cmd, cmdsize = struct.unpack_from("<II", data, pos)
+        if cmd == LC_SEGMENT_64:
+            for i in range(struct.unpack_from("<I", data, pos + 64)[0]):
+                sect = pos + 72 + i * 80
+                if bytes(data[sect : sect + 16]).rstrip(b"\x00") == b"__noptrbss":
+                    addr, size = struct.unpack_from("<QQ", data, sect + 32)
+                    return addr, addr + size
+        pos += cmdsize
+    raise RuntimeError("Mach-O __noptrbss section not found")
+
+
+def _resolve_keepalive_sites(
+    data: bytes | bytearray, funcs: dict[str, tuple[int, int]]
+) -> tuple[PatchSite, ...]:
+    """Unify OAuth and local gateway onto native `modelapiccpa.(*keepAlives)` and export telemetry to StatusLineData."""
+    word = lambda o: struct.unpack_from("<I", data, o)[0]
+    pack = lambda *ws: struct.pack(f"<{len(ws)}I", *ws)
+    movz = lambda rd, imm, sh=0: 0xD2800000 | ((sh // 16) << 21) | ((imm & 0xFFFF) << 5) | rd
+    movk = lambda rd, imm, sh: 0xF2800000 | ((sh // 16) << 21) | ((imm & 0xFFFF) << 5) | rd
+    stock_or_none = lambda off, patched: None if bytes(data[off : off + len(patched)]) == patched else bytes(data[off : off + len(patched)])
+    ret_bytes = bytes.fromhex("c0035fd6")
+    sites: list[PatchSite] = []
+
+    # 1. Gateway session affinity: preserve GenerateContentRequest.SessionId in both gateway entrypoints.
+    set_role_off = funcs["setToolResultRoleToUser"][0]
+    for sym_key, label in (
+        ("StreamGenerateContentFromGateway", "codeassistclient.(*CodeAssistClient).StreamGenerateContentFromGateway"),
+        ("GenerateContentFromGateway", "codeassistclient.(*CodeAssistClient).GenerateContentFromGateway"),
+    ):
+        calls = _calls_to(data, funcs[sym_key], set_role_off)
+        if len(calls) != 1:
+            raise RuntimeError(f"{label}: expected 1 call to setToolResultRoleToUser, found {len(calls)}")
+        cbz_off = calls[0] + 8
+        w_cbz = word(cbz_off)
+        target = branch_target(w_cbz, cbz_off)
+        if target is None or not (0x0C <= target - cbz_off <= 0x40):
+            raise RuntimeError(f"{label}: expected short cbz/b guard after setToolResultRoleToUser at {hex(VM_BASE + cbz_off)}")
+        orig_cbz = pack(0xB4000000 | ((((target - cbz_off) // 4) & 0x7FFFF) << 5))
+        patched_b = encode_b(VM_BASE + cbz_off, VM_BASE + target)
+        if bytes(data[cbz_off : cbz_off + 4]) not in (orig_cbz, patched_b):
+            raise RuntimeError(f"{label}: unexpected guard word {hex(w_cbz)} at {hex(VM_BASE + cbz_off)}")
+        sites.append(
+            PatchSite(
+                "cache-keepalive",
+                f"{label} -> preserve GenerateContentRequest.SessionId on gateway requests",
+                VM_BASE + cbz_off,
+                cbz_off,
+                orig_cbz,
+                patched_b,
+            )
+        )
+
+    # 2. Route nil FeatureProviderResolver / nil FeatureProvider through modelapiccpa.keepAlivePings.
+    gen_bounds = funcs["ccpaGenerate"]
+    kp_bounds = funcs["keepAlivePings"]
+    kp_calls = _calls_to(data, gen_bounds, kp_bounds[0])
+    if len(kp_calls) != 1:
+        raise RuntimeError(f"modelapiccpa.(*Client).Generate: expected 1 call to keepAlivePings, found {len(kp_calls)}")
+    kp_call = kp_calls[0]
+    ldr_fp_data = _sp_slot(word(kp_call - 4), 0xF94003E0)
+    w_credits = word(kp_call + 4)
+    if ldr_fp_data is None or ldr_fp_data[0] != 1 or (w_credits & 0xFFC003FF) != 0x394003E1:
+        raise RuntimeError("modelapiccpa.(*Client).Generate: unexpected stack loads around keepAlivePings call")
+    fp_data_sp = ldr_fp_data[1]
+    credits_sp = (w_credits >> 10) & 0xFFF
+
+    cbnz_guards = [
+        o for o in range(gen_bounds[0], kp_call - 12, 4)
+        if (word(o) & 0xFF000000) == 0xB5000000 and branch_target(word(o), o) == o + 0x10
+    ]
+    if len(cbnz_guards) != 2:
+        raise RuntimeError(f"modelapiccpa.(*Client).Generate: expected 2 cbnz feature-provider guards, found {len(cbnz_guards)}")
+    g1_body, g2_body = cbnz_guards[0] + 4, cbnz_guards[1] + 4
+    g1_patched = (
+        pack(0xAA1F03E0, 0xAA1F03E1)  # mov x0, xzr; mov x1, xzr
+        + encode_b(VM_BASE + g1_body + 8, VM_BASE + g2_body)
+    )
+    g2_patched = (
+        pack(
+            0xF90003FF | ((fp_data_sp // 8) << 10),  # str xzr, [sp, #fp_data_sp]
+            0x390003FF | (credits_sp << 10),         # strb wzr, [sp, #credits_sp]
+        )
+        + encode_b(VM_BASE + g2_body + 8, VM_BASE + kp_call)
+    )
+    sites.append(
+        PatchSite(
+            "cache-keepalive",
+            "modelapiccpa.(*Client).Generate -> route nil featureProviderResolver through keepAlivePings",
+            VM_BASE + g1_body,
+            g1_body,
+            stock_or_none(g1_body, g1_patched),
+            g1_patched,
+        )
+    )
+    sites.append(
+        PatchSite(
+            "cache-keepalive",
+            "modelapiccpa.(*Client).Generate -> route nil FeatureProvider through keepAlivePings",
+            VM_BASE + g2_body,
+            g2_body,
+            stock_or_none(g2_body, g2_patched),
+            g2_patched,
+        )
+    )
+
+    # 3a. Skip keepalive registration for all subagents (`parent_cascade_id != ""` in req.Metadata):
+    # subagents run non-interactively without 4m30s human idle pauses, so keeping dead worker trajectories
+    # warm wastes tokens and pollutes main-session telemetry.
+    br_bounds = funcs["keepAlivesBeforeRequest"]
+    sub_guards = [
+        (o + 4, branch_target(word(t), t))
+        for o in range(br_bounds[0], min(br_bounds[1], br_bounds[0] + 0x100), 4)
+        if (word(o) & 0xFF00001F) == 0xB4000004  # cbz x4, <main_flow>
+        and (main_flow := branch_target(word(o), o)) is not None
+        and 0x100 <= main_flow - o <= 0x280
+        for t in (main_flow - 4,)
+        if (word(t) & 0xFFF8001F) == 0x37000003  # tbnz w3, #0, <early_ret>
+    ]
+    if len(sub_guards) != 1 or sub_guards[0][1] is None:
+        raise RuntimeError(f"keepAlives.beforeRequest: expected 1 parent_cascade_id guard, found {sub_guards}")
+    sub_skip_off, sub_early_ret = sub_guards[0]
+    sub_skip_patched = encode_b(VM_BASE + sub_skip_off, VM_BASE + sub_early_ret)
+    sites.append(
+        PatchSite(
+            "cache-keepalive",
+            "modelapiccpa.(*keepAlives).beforeRequest -> skip keepalive on all subagents (parent_cascade_id set)",
+            VM_BASE + sub_skip_off,
+            sub_skip_off,
+            stock_or_none(sub_skip_off, sub_skip_patched),
+            sub_skip_patched,
+        )
+    )
+
+    # 3b. Preserve full prompt prefix in (*keepAlives).beforeRequest by NOPing `bl trimLastBlock`,
+    # freeing trimLastBlock (608B) in __text as our self-contained leaf helper & rodata cave.
+    tlb_start, tlb_end = funcs["trimLastBlock"]
+    tlb_sites = [
+        o + 4 for o in range(br_bounds[0], br_bounds[1] - 8, 4)
+        if word(o) == 0xAA0103E0  # mov x0, x1
+        and (branch_target(word(o + 4), o + 4) == tlb_start or bytes(data[o + 4 : o + 8]) == NOP)
+        and (_sp_slot(word(o + 8), 0xF94003E0) or (None, None))[0] == 1
+    ]
+    if len(tlb_sites) != 1:
+        raise RuntimeError(f"keepAlives.beforeRequest: expected 1 trimLastBlock call site, found {len(tlb_sites)}")
+    tlb_call = tlb_sites[0]
+    sites.append(
+        PatchSite(
+            "cache-keepalive",
+            "modelapiccpa.(*keepAlives).beforeRequest -> skip trimLastBlock to preserve full prompt prefix",
+            VM_BASE + tlb_call,
+            tlb_call,
+            encode_bl(VM_BASE + tlb_call, VM_BASE + tlb_start),
+            NOP,
+        )
+    )
+
+    # 4. Resolve the two contiguous unused Halloween __noptrbss uint64 globals (`g_hash`, `g_val`)
+    # and zero their initialization calls in halloween.init.
+    noptr_lo, noptr_hi = _noptrbss_bounds(data)
+    hi_start, hi_end = funcs["halloweenInit"]
+    hw_slots: list[tuple[int, int, int]] = []  # (bl_off, bl_target_off, global_va)
+    for o in range(hi_start, hi_end - 12, 4):
+        bt = branch_target(word(o), o)
+        if (bt is not None and (word(o) >> 26) == 0x25) or word(o) == 0xAA1F03E0:
+            w_adrp, w_str = word(o + 4), word(o + 8)
+            if (w_adrp & 0x9F00001F) == 0x9000001B and (w_str & 0xFFC003FF) == 0xF9000360:
+                immlo = (w_adrp >> 29) & 0x3
+                immhi = (w_adrp >> 5) & 0x7FFFF
+                imm = (immhi << 2) | immlo
+                if imm & (1 << 20):
+                    imm -= 1 << 21
+                page = ((VM_BASE + o + 4) & ~0xFFF) + (imm << 12)
+                gva = page + (((w_str >> 10) & 0xFFF) * 8)
+                if noptr_lo <= gva < noptr_hi:
+                    hw_slots.append((o, bt if bt is not None else funcs["lipglossColor"][0], gva))
+    if len(hw_slots) != 2 or hw_slots[1][2] != hw_slots[0][2] + 8:
+        raise RuntimeError(f"halloween.init: expected 2 adjacent __noptrbss uint64 stores, found {hw_slots}")
+    g_hash_va, g_val_va = hw_slots[0][2], hw_slots[1][2]
+    for idx, (bl_off, bl_tgt, gva) in enumerate(hw_slots):
+        role = "session hash" if idx == 0 else "packed telemetry"
+        sites.append(
+            PatchSite(
+                "cache-keepalive",
+                f"halloween.init -> reserve __noptrbss uint64 ({role})",
+                VM_BASE + bl_off,
+                bl_off,
+                encode_bl(VM_BASE + bl_off, VM_BASE + bl_tgt),
+                pack(0xAA1F03E0),  # mov x0, xzr
+            )
+        )
+
+    # 5. Inspect Go reflection metadata for `modelapiccpa.keepAlive` and `types.StatusLineData`.
+    types_base = _go_types_base(data, funcs)
+    _, _, _, ka_fields = _go_struct_type(data, "*modelapiccpa.keepAlive", types_base)
+    ka_map = {nm: byte_off for _, nm, _, _, byte_off in ka_fields}
+    for req_nm in ("refreshedAt", "pingsSent", "pingsLeft"):
+        if req_nm not in ka_map:
+            raise RuntimeError(f"modelapiccpa.keepAlive missing field {req_nm!r}: {list(ka_map)}")
+    ref_off, sent_off, left_off = ka_map["refreshedAt"], ka_map["pingsSent"], ka_map["pingsLeft"]
+    if ref_off % 8 or sent_off % 8 or left_off % 8:
+        raise RuntimeError(f"modelapiccpa.keepAlive unaligned offsets: {ka_map}")
+
+    _, sl_size, sl_ptrb, sl_fields = _go_struct_type(data, "*types.StatusLineData", types_base)
+    sl_by_name = {nm: (slot_off, fn_va, ft_va, byte_off) for slot_off, nm, fn_va, ft_va, byte_off in sl_fields}
+    if "SessionID" not in sl_by_name or "TerminalWidth" not in sl_by_name:
+        raise RuntimeError("types.StatusLineData missing SessionID or TerminalWidth")
+    session_id_off = sl_by_name["SessionID"][3]
+    int_type_va = sl_by_name["TerminalWidth"][2]
+    last_slot_off, last_nm, _, _, keepalive_field_off = sl_fields[-1]
+    if last_nm not in ("statusLineDataInternal", "CacheKeepalive") or keepalive_field_off < sl_ptrb or keepalive_field_off + 8 > sl_size:
+        raise RuntimeError(
+            f"types.StatusLineData trailing slot unusable: field={last_nm!r} off={hex(keepalive_field_off)} "
+            f"ptrbytes={hex(sl_ptrb)} size={hex(sl_size)}"
+        )
+    orig_internal_type_va = VM_BASE + go_type_descriptor(data, "*types.statusLineDataInternal", types_base)
+    internal_nm = b"statusLineDataInternal"
+    internal_recs = [
+        VM_BASE + i - 2 for i in _find_all(data, internal_nm)
+        if data[i - 1] == len(internal_nm) and data[i - 2] == 0x08
+    ]
+    if len(internal_recs) != 1:
+        raise RuntimeError(f"Expected 1 abi.Name for statusLineDataInternal, found {len(internal_recs)}")
+    orig_internal_name_va = internal_recs[0]
+
+    # 6. Assemble cave contents inside trimLastBlock (`tlb_start .. tlb_end`, 608B).
+    cave_va = VM_BASE + tlb_start
+    kp_start, kp_end = kp_bounds
+    if kp_end - kp_start < 0x88 or word(kp_start + 0x0C) != 0xF81D0FFE or word(kp_start + 0x74) != 0xD65F03C0:
+        raise RuntimeError("modelapiccpa.keepAlivePings frame layout changed")
+    kp_call_pc = kp_start + 0x38
+    if word(kp_call_pc) != 0xD63F0060 and branch_target(word(kp_call_pc), kp_call_pc) != funcs["osGetenv"][0]:
+        raise RuntimeError("modelapiccpa.keepAlivePings: expected call at +0x38")
+    kp_set_x0_va = VM_BASE + kp_start + 0x68
+
+    # 6a. parse_touches_tail (7 insns = 28B): handles 2-digit AGY_CACHE_MAX_TOUCHES ("10".."99").
+    parse_tail_va = cave_va
+    parse_tail_code = (
+        pack(
+            0x39400403,        # ldrb w3, [x0, #1]
+            0x7100C063,        # subs w3, w3, #0x30
+            0x7100247F,        # cmp  w3, #9
+            0x54000068,        # b.hi +0x0c -> branch back with single digit in x2
+            movz(4, 10),       # mov  x4, #10
+            0x9B040C42,        # madd x2, x2, x4, x3
+        )
+        + encode_b(parse_tail_va + 24, kp_set_x0_va)
+    )
+
+    # 6b. 4 telemetry writer entry stubs (8 insns = 32B) + shared writer_common.
+    entry_live_va = parse_tail_va + len(parse_tail_code)
+    entry_exhausted_va = entry_live_va + 8
+    entry_failed_va = entry_exhausted_va + 8
+    entry_clear_va = entry_failed_va + 8
+    writer_common_va = entry_clear_va + 8
+
+    stubs_code = (
+        pack(movz(8, 1)) + encode_b(entry_live_va + 4, writer_common_va)
+        + pack(movz(8, 2)) + encode_b(entry_exhausted_va + 4, writer_common_va)
+        + pack(movz(8, 3)) + encode_b(entry_failed_va + 4, writer_common_va)
+        + pack(0xAA1F03E8) + encode_b(entry_clear_va + 4, writer_common_va)  # mov x8, xzr
+    )
+
+    # Build writer_common and sl_read:
+    # g_hash_va holds two 32-bit FNV-1a hashes:
+    #   +0 (lo32): active trajectory hash (set when pingsSent == 0 on a fresh turn; verified on background pings/stop)
+    #   +4 (hi32): active StatusLine SessionID hash (set on first non-empty SessionID; clears telemetry on /new or /resume)
+    wall_to_int = 0xDD7B17F80   # Go time.wallToInternal (1885-01-01 -> 0001-01-01 in seconds)
+    unix_to_int = 0xE7791F700   # Go time.unixToInternal (1970-01-01 -> 0001-01-01 in seconds)
+    traj_h_ldr = 0xB94000C7 | (((g_hash_va & 0xFFF) // 4) << 10)        # ldr w7, [x6, #g_hash_lo]
+    traj_h_str = 0xB90000C3 | (((g_hash_va & 0xFFF) // 4) << 10)        # str w3, [x6, #g_hash_lo]
+    traj_h_clr = 0xB90000DF | (((g_hash_va & 0xFFF) // 4) << 10)        # str wzr, [x6, #g_hash_lo]
+    sid_h_ldr = 0xB94000C7 | ((((g_hash_va + 4) & 0xFFF) // 4) << 10)   # ldr w7, [x6, #g_hash_lo + 4]
+    sid_h_str = 0xB90000C3 | ((((g_hash_va + 4) & 0xFFF) // 4) << 10)   # str w3, [x6, #g_hash_lo + 4]
+    g_val_str0 = 0xF900013F | (((g_val_va & 0xFFF) // 8) << 10)         # str xzr, [x9, #g_val_lo]
+    g_val_str2 = 0xF9000122 | (((g_val_va & 0xFFF) // 8) << 10)         # str x2, [x9, #g_val_lo]
+
+    def assemble_block(base_va: int, spec: list) -> bytes:
+        labels: dict[str, int] = {}
+        idx = 0
+        for item in spec:
+            if isinstance(item, str):
+                labels[item] = idx
+            else:
+                idx += 1
+        out_words: list[int] = []
+        pc_idx = 0
+        for item in spec:
+            if isinstance(item, str):
+                continue
+            if callable(item):
+                item = item(base_va + pc_idx * 4, {k: base_va + v * 4 for k, v in labels.items()})
+            out_words.append(item if isinstance(item, int) else struct.unpack("<I", item)[0])
+            pc_idx += 1
+        return pack(*out_words)
+
+    cbz_x = lambda rt, tgt: lambda pc, L: 0xB4000000 | ((((L[tgt] - pc) // 4) & 0x7FFFF) << 5) | rt
+    cbnz_x = lambda rt, tgt: lambda pc, L: 0xB5000000 | ((((L[tgt] - pc) // 4) & 0x7FFFF) << 5) | rt
+    b_cond = lambda cond, tgt: lambda pc, L: encode_b_cond(pc, L[tgt], cond)
+    adrp_op = lambda rd, target_va: lambda pc, L: encode_adrp(pc, target_va, rd)
+    tbz_bit63 = lambda rt, tgt: lambda pc, L: 0xB6F80000 | ((((L[tgt] - pc) // 4) & 0x3FFF) << 5) | rt
+
+    cbz_w = lambda rt, tgt: lambda pc, L: 0x34000000 | ((((L[tgt] - pc) // 4) & 0x7FFFF) << 5) | rt
+    cbnz_w = lambda rt, tgt: lambda pc, L: 0x35000000 | ((((L[tgt] - pc) // 4) & 0x7FFFF) << 5) | rt
+
+    writer_spec: list = [
+        0xA9410BE1,                                     # ldp  x1, x2, [sp, #0x10]  (trajectoryID.ptr, len)
+        cbz_x(2, "ret"),                                # cbz  x2, ret
+        movz(3, 0x9DC5),                                # FNV-1a 32-bit offset basis 0x811c9dc5
+        movk(3, 0x811C, 16),
+        movz(4, 0x0193),                                # FNV-1a 32-bit prime 0x01000193
+        movk(4, 0x0100, 16),
+        "hash_loop",
+        0x38401425,                                     # ldrb w5, [x1], #1
+        0x4A050063,                                     # eor  w3, w3, w5
+        0x1B047C63,                                     # mul  w3, w3, w4
+        0xF1000442,                                     # subs x2, x2, #1
+        b_cond(0x1, "hash_loop"),                       # b.ne hash_loop
+        0x7100007F,                                     # cmp  w3, #0
+        0x1A9F1463,                                     # csinc w3, w3, wzr, ne (non-zero 32-bit hash)
+        adrp_op(6, g_hash_va),
+        adrp_op(9, g_val_va),
+        cbnz_x(8, "non_clear"),
+        # stopLocked (x8 == 0): clear g_val only if trajectory matches active lo32
+        traj_h_ldr,                                     # ldr  w7, [x6, #g_hash_lo]
+        0x6B0300FF,                                     # cmp  w7, w3
+        b_cond(0x1, "ret"),                             # b.ne ret
+        g_val_str0,                                     # *g_val = 0
+        0xD65F03C0,                                     # ret
+        "non_clear",
+        0xF94013E1,                                     # ldr  x1, [sp, #0x20] (entry *keepAlive)
+        cbz_x(1, "ret"),
+        0xF9400025 | ((sent_off // 8) << 10),           # ldr  x5, [x1, #sent_off]
+        cbnz_x(5, "verify_traj"),                       # background ping (pingsSent > 0) -> must match active lo32
+        traj_h_str,                                     # fresh main turn (pingsSent == 0) -> claim active lo32 = w3
+        0x2A0303E7,                                     # mov  w7, w3
+        b_cond(0xE, "pack_entry"),                      # b.al pack_entry
+        "verify_traj",
+        traj_h_ldr,                                     # ldr  w7, [x6, #g_hash_lo]
+        0x6B0300FF,                                     # cmp  w7, w3
+        b_cond(0x1, "ret"),                             # stale background ping from old conversation -> ignore!
+        "pack_entry",
+        0xA9400C22 | (((ref_off // 8) & 0x3F) << 15),   # ldp  x2, x3, [x1, #ref_off] (wall, ext)
+        tbz_bit63(2, "no_mono"),                        # tbz  x2, #63, no_mono
+        0xD35EF844,                                     # ubfx x4, x2, #30, #33
+        movz(5, wall_to_int & 0xFFFF),
+        movk(5, (wall_to_int >> 16) & 0xFFFF, 16),
+        movk(5, (wall_to_int >> 32) & 0xFFFF, 32),
+        0x8B050083,                                     # add  x3, x4, x5
+        "no_mono",
+        movz(5, unix_to_int & 0xFFFF),
+        movk(5, (unix_to_int >> 16) & 0xFFFF, 16),
+        movk(5, (unix_to_int >> 32) & 0xFFFF, 32),
+        0xEB050062,                                     # subs x2, x3, x5 (Unix seconds)
+        0x9A9FC042,                                     # csel x2, x2, xzr, gt
+        0xD3408442,                                     # ubfx x2, x2, #0, #34
+        0xF9400023 | ((sent_off // 8) << 10),           # ldr  x3, [x1, #sent_off]
+        0xF100007F,                                     # cmp  x3, #0
+        0x9A9FC063,                                     # csel x3, x3, xzr, gt
+        movz(5, 255),                                   # mov  x5, #255
+        0xF103FC7F,                                     # cmp  x3, #255
+        0x9A859063,                                     # csel x3, x3, x5, ls
+        0xF9400024 | ((left_off // 8) << 10),           # ldr  x4, [x1, #left_off]
+        0xF100009F,                                     # cmp  x4, #0
+        0x9A9FC084,                                     # csel x4, x4, xzr, gt
+        0xF103FC9F,                                     # cmp  x4, #255
+        0x9A859084,                                     # csel x4, x4, x5, ls
+        0xAA038842,                                     # orr  x2, x2, x3, lsl #34
+        0xAA04A842,                                     # orr  x2, x2, x4, lsl #42
+        0xAA08C842,                                     # orr  x2, x2, x8, lsl #50
+        g_val_str2,                                     # str  x2, [x9, #g_val_lo]
+        "ret",
+        0xD65F03C0,                                     # ret
+    ]
+    writer_code = assemble_block(writer_common_va, writer_spec)
+
+    # 6c. statusline_read: tail-jumped from BuildStatusLineData's ret (x0 = *types.StatusLineData).
+    sl_read_va = writer_common_va + len(writer_code)
+    g_val_ldr8 = 0xF9400128 | (((g_val_va & 0xFFF) // 8) << 10)             # ldr x8, [x9, #g_val_lo]
+    sl_store_ka = 0xF9000008 | ((keepalive_field_off // 8) << 10)           # str x8, [x0, #0x148]
+    sl_load_sid = 0xA9400801 | (((session_id_off // 8) & 0x3F) << 15)       # ldp x1, x2, [x0, #0x10]
+
+    sl_spec: list = [
+        cbz_x(0, "ret"),
+        sl_load_sid,                                    # ldp  x1, x2, [x0, #session_id_off]
+        cbz_x(2, "ret"),
+        movz(3, 0x9DC5),                                # FNV-1a 32-bit offset basis 0x811c9dc5
+        movk(3, 0x811C, 16),
+        movz(4, 0x0193),                                # FNV-1a 32-bit prime 0x01000193
+        movk(4, 0x0100, 16),
+        "hash_loop",
+        0x38401425,                                     # ldrb w5, [x1], #1
+        0x4A050063,                                     # eor  w3, w3, w5
+        0x1B047C63,                                     # mul  w3, w3, w4
+        0xF1000442,                                     # subs x2, x2, #1
+        b_cond(0x1, "hash_loop"),
+        0x7100007F,                                     # cmp  w3, #0
+        0x1A9F1463,                                     # csinc w3, w3, wzr, ne
+        adrp_op(6, g_hash_va),
+        adrp_op(9, g_val_va),
+        sid_h_ldr,                                      # ldr  w7, [x6, #g_hash_lo + 4]
+        cbnz_w(7, "check_sid"),
+        sid_h_str,                                      # first non-empty SessionID: record hi32 without clearing Turn 1 telemetry!
+        b_cond(0xE, "matched"),
+        "check_sid",
+        0x6B0300FF,                                     # cmp  w7, w3
+        b_cond(0x0, "matched"),                         # b.eq matched
+        sid_h_str,                                      # conversation switched (/new or /resume): update hi32
+        traj_h_clr,                                     # clear active trajectory lo32
+        g_val_str0,                                     # clear telemetry
+        0xD65F03C0,                                     # ret
+        "matched",
+        g_val_ldr8,                                     # ldr  x8, [x9, #g_val_lo]
+        sl_store_ka,                                    # str  x8, [x0, #0x148]
+        "ret",
+        0xD65F03C0,                                     # ret
+    ]
+    sl_code = assemble_block(sl_read_va, sl_spec)
+
+    # 6d. Read-only constants in cave tail: env var name + abi.Name for CacheKeepalive.
+    env_bytes = b"AGY_CACHE_MAX_TOUCHES"
+    env_va = sl_read_va + len(sl_code)
+    env_padded = env_bytes + b"\x00" * ((4 - len(env_bytes) % 4) % 4)
+
+    field_name = b"CacheKeepalive"
+    field_tag = b'json:"cache_keepalive,omitempty"'
+    abi_name_va = env_va + len(env_padded)
+    abi_name_bytes = bytes([0x03, len(field_name)]) + field_name + bytes([len(field_tag)]) + field_tag
+    abi_name_padded = abi_name_bytes + b"\x00" * ((4 - len(abi_name_bytes) % 4) % 4)
+
+    cave_payload = parse_tail_code + stubs_code + writer_code + sl_code + env_padded + abi_name_padded
+    if len(cave_payload) > tlb_end - tlb_start:
+        raise RuntimeError(f"keepalive cave needs {len(cave_payload)}B, trimLastBlock has {tlb_end - tlb_start}B")
+
+    sites.append(
+        PatchSite(
+            "cache-keepalive",
+            "modelapiccpa.trimLastBlock -> keepalive telemetry helpers and CacheKeepalive abi.Name",
+            cave_va,
+            tlb_start,
+            stock_or_none(tlb_start, cave_payload),
+            cave_payload,
+        )
+    )
+
+    # 7. Rebuild keepAlivePings body (+0x18..+0x6c, 84B) keeping stock prologue, call PC (+0x38), epilogue, and morestack.
+    kp_body_off = kp_start + 0x18
+    kp_body_va = VM_BASE + kp_body_off
+    # Exact 21 instructions (84B) from +0x18 to +0x6c:
+    # +0x18: stp xzr, xzr, [sp, #0x38]  (0xa903ffdf)
+    # +0x1c..+0x24: adrp+add x0, env_va
+    # +0x24: mov x1, #21
+    # +0x28..+0x38: 4x nop (align bl os.Getenv to exact stock call PC +0x38)
+    # +0x38: bl os.Getenv
+    # +0x3c: mov x2, #4        (default max touches when unset/empty)
+    # +0x40: cbz x1, +0x28     (-> +0x68: mov x0, x2)
+    # +0x44: ldrb w3, [x0]
+    # +0x48: mov x2, xzr       (0 for non-digit like "off"/"false")
+    # +0x4c: subs w3, w3, #0x30
+    # +0x50: cmp w3, #9
+    # +0x54: b.hi +0x14        (-> +0x68: mov x0, x2)
+    # +0x58: mov w2, w3
+    # +0x5c: cmp x1, #1
+    # +0x60: b.ne parse_tail_va
+    # +0x64: nop
+    # +0x68: mov x0, x2        (falls into stock +0x6c: ldur x29; ldr x30; ret!)
+    kp_body_code = (
+        pack(0xA903FFFF)
+        + encode_adrp_add(kp_body_va + 0x04, env_va, 0)
+        + pack(movz(1, len(env_bytes)))
+        + NOP * 4
+        + encode_bl(VM_BASE + kp_call_pc, VM_BASE + funcs["osGetenv"][0])
+        + pack(
+            movz(2, 4),
+            0xB4000141,  # cbz x1, +0x28 (-> +0x68)
+            0x39400003,  # ldrb w3, [x0]
+            0xAA1F03E2,  # mov x2, xzr
+            0x7100C063,  # subs w3, w3, #0x30
+            0x7100247F,  # cmp w3, #9
+            0x540000A8,  # b.hi +0x14 (-> +0x68)
+            0x2A0303E2,  # mov w2, w3
+            0xF100043F,  # cmp x1, #1
+        )
+        + encode_b_ne(kp_body_va + 0x48, parse_tail_va)
+        + NOP
+        + pack(0xAA0203E0)  # mov x0, x2
+    )
+    assert len(kp_body_code) == 0x54
+    sites.append(
+        PatchSite(
+            "cache-keepalive",
+            "modelapiccpa.keepAlivePings -> read AGY_CACHE_MAX_TOUCHES (default 4, 0 disables)",
+            kp_body_va,
+            kp_body_off,
+            stock_or_none(kp_body_off, kp_body_code),
+            kp_body_code,
+        )
+    )
+
+    # 8. Tail-hook scheduleNextPingLocked, ping's 4 mapdelete exits, stopLocked's mapdelete exit, and BuildStatusLineData.
+    def find_rets(bounds: tuple[int, int], expected_targets: set[int]) -> list[int]:
+        return [
+            o for o in range(bounds[0], bounds[1], 4)
+            if word(o) == 0xD65F03C0
+            or ((word(o) >> 26) == 0x05 and branch_target(word(o), o) in expected_targets)
+        ]
+
+    cave_entry_offs = {
+        (entry_live_va - VM_BASE),
+        (entry_exhausted_va - VM_BASE),
+        (entry_failed_va - VM_BASE),
+        (entry_clear_va - VM_BASE),
+        (sl_read_va - VM_BASE),
+    }
+
+    sched_rets = find_rets(funcs["scheduleNextPingLocked"], cave_entry_offs)
+    if len(sched_rets) != 1:
+        raise RuntimeError(f"scheduleNextPingLocked: expected 1 ret, found {len(sched_rets)}")
+    sites.append(
+        PatchSite(
+            "cache-keepalive",
+            "modelapiccpa.(*keepAlives).scheduleNextPingLocked -> publish live keepalive telemetry",
+            VM_BASE + sched_rets[0],
+            sched_rets[0],
+            ret_bytes,
+            encode_b(VM_BASE + sched_rets[0], entry_live_va),
+        )
+    )
+
+    # In keepAlives.ping, find the 4 exits preceded by `bl runtime.mapdelete_faststr` within 0x60B.
+    # Among those 4, the sole `pingsLeft <= 0` exit follows `sub xN, xN, #1; str xN, [xM, #left_off]`.
+    mapdel_off = funcs["mapdeleteFaststr"][0]
+    ping_bounds = funcs["keepAlivesPing"]
+    ping_del_calls = _calls_to(data, ping_bounds, mapdel_off)
+    if len(ping_del_calls) != 4:
+        raise RuntimeError(f"keepAlives.ping: expected 4 mapdelete_faststr calls, found {len(ping_del_calls)}")
+    all_ping_rets = find_rets(ping_bounds, cave_entry_offs)
+    for idx, del_call in enumerate(ping_del_calls):
+        ret_off = next((r for r in all_ping_rets if 0 < r - del_call <= 0x60), None)
+        if ret_off is None:
+            raise RuntimeError(f"keepAlives.ping: no ret within 0x60B after mapdelete at {hex(VM_BASE + del_call)}")
+        # Check if `str xN, [xM, #left_off]` occurred within 0x30B before `del_call` (touches exhausted after hit)
+        exhausted = any(
+            (word(o) & 0xFFC00000) == 0xF9000000 and (((word(o) >> 10) & 0xFFF) * 8) == left_off
+            for o in range(max(ping_bounds[0], del_call - 0x30), del_call, 4)
+        )
+        target_va = entry_exhausted_va if exhausted else entry_failed_va
+        tag = "exhausted" if exhausted else f"failed #{idx + 1}"
+        sites.append(
+            PatchSite(
+                "cache-keepalive",
+                f"modelapiccpa.(*keepAlives).ping -> publish {tag} keepalive telemetry",
+                VM_BASE + ret_off,
+                ret_off,
+                ret_bytes,
+                encode_b(VM_BASE + ret_off, target_va),
+            )
+        )
+
+    stop_bounds = funcs["keepAlivesStopLocked"]
+    stop_del_calls = _calls_to(data, stop_bounds, mapdel_off)
+    stop_rets = find_rets(stop_bounds, cave_entry_offs)
+    stop_hit_ret = next((r for r in stop_rets if stop_del_calls and 0 < r - stop_del_calls[0] <= 0x20), None)
+    if len(stop_del_calls) != 1 or stop_hit_ret is None:
+        raise RuntimeError("keepAlives.stopLocked: expected 1 mapdelete_faststr exit")
+    sites.append(
+        PatchSite(
+            "cache-keepalive",
+            "modelapiccpa.(*keepAlives).stopLocked -> clear keepalive telemetry on stop",
+            VM_BASE + stop_hit_ret,
+            stop_hit_ret,
+            ret_bytes,
+            encode_b(VM_BASE + stop_hit_ret, entry_clear_va),
+        )
+    )
+
+    # 9. Expose CacheKeepalive on types.StatusLineData and populate it on BuildStatusLineData return.
+    orig_sf = struct.pack("<QQ", orig_internal_name_va, orig_internal_type_va)
+    patched_sf = struct.pack("<QQ", abi_name_va, int_type_va)
+    if last_nm == "statusLineDataInternal" and bytes(data[last_slot_off : last_slot_off + 16]) != orig_sf:
+        raise RuntimeError("types.StatusLineData trailing StructField has unexpected Name/Typ pointers")
+    sites.append(
+        PatchSite(
+            "cache-keepalive",
+            'types.StatusLineData -> map trailing +0x148 slot to CacheKeepalive `json:"cache_keepalive,omitempty"`',
+            VM_BASE + last_slot_off,
+            last_slot_off,
+            orig_sf,
+            patched_sf,
+        )
+    )
+
+    bsl_rets = find_rets(funcs["BuildStatusLineData"], cave_entry_offs)
+    if len(bsl_rets) != 1:
+        raise RuntimeError(f"store.BuildStatusLineData: expected 1 ret, found {len(bsl_rets)}")
+    sites.append(
+        PatchSite(
+            "cache-keepalive",
+            "store.BuildStatusLineData -> populate StatusLineData.CacheKeepalive from in-process telemetry",
+            VM_BASE + bsl_rets[0],
+            bsl_rets[0],
+            ret_bytes,
+            encode_b(VM_BASE + bsl_rets[0], sl_read_va),
+        )
+    )
+
+    return tuple(sites)
+
 def _resolve_prompt_template_sites(data: bytes | bytearray, version: str, strict: bool) -> tuple[PatchSite, ...]:
     """Templates that templates/v<version>/system_prompts/ changes from stock (see prompt_templates.py)."""
     return tuple(
@@ -3322,6 +4017,7 @@ def _resolve_groups(data: bytes | bytearray, version: str, strict: bool) -> dict
     run("code-theme", lambda: _resolve_code_theme_sites(data))
     run("thought-grouping", lambda: _resolve_thought_grouping_sites(data, funcs))
     run("thought-block", lambda: _resolve_thought_block_sites(data, funcs))
+    run("cache-keepalive", lambda: _resolve_keepalive_sites(data, funcs))
     run("prompt", lambda: _resolve_prompt_template_sites(data, version, strict))
     return out
 
@@ -3352,6 +4048,7 @@ def resolve_patch_sites(data: bytes | bytearray, version: str, strict: bool = Fa
         *out["context-window"], *cot_step_sites, *pal_pre, out["statusline-refresh"], *pal_post, cot_strip_site,
         *out["tool-monitors"], *out["color-scheme"], *out["command-elbow"], *out["spinner"],
         *out["pending-line"], *out["pending-verbs"], *out["tool-marks"], *out["code-theme"], *out["live-thinking"], *out["thought-grouping"], *out["thought-block"],
+        *out["cache-keepalive"],
         *out["prompt"],
     )
 
@@ -3695,13 +4392,10 @@ def print_status(binaries: list[pathlib.Path], verbose: bool = False) -> None:
     conf_path = pathlib.Path(os.environ.get("AGY_NEO_CONFIG") or AGY_NEO_CONF_TARGET)
     conf = _read_neo_conf(conf_path)
     pick = lambda env_k, cfg_k, dflt: os.environ.get(env_k) or conf.get(cfg_k) or dflt
-    relay_cfg = os.environ.get("AGY_CACHE_RELAY")
-    relay_mode = relay_cfg if relay_cfg in ("off", "0", "false", "no") else (conf.get("CACHE_RELAY") or "on")
     conf_label = str(conf_path) if conf_path.exists() else f"{conf_path} (defaults)"
     print(
-        f"Cache    : {conf_label} -> relay={relay_mode}, keepalive={pick('AGY_CACHE_KEEPALIVE', 'CACHE_KEEPALIVE', 'on')}, "
-        f"refresh_at={pick('AGY_CACHE_REFRESH_AT', 'CACHE_REFRESH_AT', '4m30s')}, ttl={pick('AGY_CACHE_TTL', 'CACHE_TTL', '5m')}, "
-        f"max_touches={pick('AGY_CACHE_MAX_TOUCHES', 'CACHE_MAX_TOUCHES', '4')}, min_tokens={pick('AGY_CACHE_MIN_TOKENS', 'CACHE_MIN_TOKENS', '32000')}"
+        f"Cache    : {conf_label} -> engine=native(modelapiccpa), keepalive={pick('AGY_CACHE_KEEPALIVE', 'CACHE_KEEPALIVE', 'on')}, "
+        f"ttl={pick('AGY_CACHE_TTL', 'CACHE_TTL', '5m')}, max_touches={pick('AGY_CACHE_MAX_TOUCHES', 'CACHE_MAX_TOUCHES', '4')}"
     )
     env_override = os.environ.get("AGY_CLI_AUTO_COMPACT_OVERRIDE")
     print(f"Env Var  : AGY_CLI_AUTO_COMPACT_OVERRIDE={env_override!r}")
