@@ -94,11 +94,14 @@ local PREV_STATE="idle" START_TIME=$NOW BASE_OUT=$TOT_OUT LAST_TPS="--" STEP_LAT
 if [[ -f "$STATE_FILE" ]]; then
   local _SL_TAIL=""
   read -r PREV_STATE START_TIME BASE_OUT LAST_TPS STEP_LAT LAST_DELTA _SL_TAIL < "$STATE_FILE" 2>/dev/null || true
-  CACHE_TS="${_SL_TAIL##* }"
-  [[ "$START_TIME" == <->* ]]      || START_TIME=$NOW
-  [[ "$BASE_OUT" == <-> ]]         || BASE_OUT=$TOT_OUT
-  [[ "$LAST_DELTA" == <-> ]]       || LAST_DELTA=0
-  [[ "${CACHE_TS:-}" == <-> ]]     || CACHE_TS=0
+  CACHE_TS="${_SL_TAIL##*[[:space:]]}"
+  [[ -n "$PREV_STATE" ]]            || PREV_STATE="idle"
+  [[ "$START_TIME" == <->(|.<->) ]] || START_TIME=$NOW
+  [[ "$BASE_OUT" == <-> ]]          || BASE_OUT=$TOT_OUT
+  [[ -n "$LAST_TPS" ]]              || LAST_TPS="--"
+  [[ -n "$STEP_LAT" ]]              || STEP_LAT="--"
+  [[ "$LAST_DELTA" == <-> ]]        || LAST_DELTA=0
+  [[ "${CACHE_TS:-}" == <-> ]]      || CACHE_TS=0
 else
   # Avoid counting historical session tokens as a single-step delta on cold start
   BASE_OUT=$TOT_OUT
@@ -116,7 +119,7 @@ fi
 integer DELTA_OUT=$(( TOT_OUT - BASE_OUT ))
 if (( DELTA_OUT > 0 )); then
   # Clamp multi-step / resumed jumps to latest step's CUR_OUT when available
-  if (( CUR_OUT > 0 && DELTA_OUT > CUR_OUT && PREV_STATE == "idle" )); then
+  if (( CUR_OUT > 0 && DELTA_OUT > CUR_OUT )) && [[ "$PREV_STATE" == "idle" ]]; then
     DELTA_OUT=$CUR_OUT
   fi
   float DT=$(( NOW - START_TIME ))

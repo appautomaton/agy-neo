@@ -1494,16 +1494,6 @@ def _copy_source(data: bytes | bytearray, loop_off: int) -> tuple[int, int, int,
     return None
 
 
-def _copy_dest(data: bytes | bytearray, loop_off: int) -> int | None:
-    """The sp offset a copy loop writes to: the `add` setting its `stp` register, just before its source."""
-    src = _copy_source(data, loop_off)
-    dst_reg = (struct.unpack_from("<I", data, loop_off + 8)[0] >> 5) & 0x1F
-    for off in (src[0] - 4, src[0] - 8) if src else ():
-        dec = _decode_sp_add(data, off)
-        if dec and off + dec[0] == src[0] and dec[1] == dst_reg:
-            return dec[2]
-    return None
-
 
 def _styles_in_frame(data: bytes | bytearray, bounds: tuple[int, int], copy_styles: int) -> int:
     """sp offset of a Styles held in the frame: the source of its one whole-Styles copy."""
@@ -2908,8 +2898,7 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
 
     # The block: `bl strings.Join` (the body, "\n"), then `add x27; ldr x2, [x27, #hlen]; adrp x3; add x3;
     # orr x4, xzr, #1; mov x5, x0; mov x6, x1; mov x0, xzr; add x27; ldr x1, [x27, #hptr]; bl concatstring3`.
-    # Searched from s8..sc[1] to avoid the live expanded path's own join before s8 (v1.5.9+) while still
-    # finding the out-of-line CoT body loop past span (v1.5.8).
+    # Searched from s8..sc[1] to avoid the live expanded path's own join before s8.
     joins = [o for o in _calls_to(data, (s8, sc[1]), funcs["stringsJoin"][0])
              if branch_target(word(o + 0x2C), o + 0x2C) == funcs["concatstring3"][0]]
     if len(joins) != 1:
@@ -3785,7 +3774,7 @@ def _resolve_keepalive_sites(
     kp_body_off = kp_start + 0x18
     kp_body_va = VM_BASE + kp_body_off
     # Exact 21 instructions (84B) from +0x18 to +0x6c:
-    # +0x18: stp xzr, xzr, [sp, #0x38]  (0xa903ffdf)
+    # +0x18: stp xzr, xzr, [sp, #0x38]  (0xa903ffff)
     # +0x1c..+0x24: adrp+add x0, env_va
     # +0x24: mov x1, #21
     # +0x28..+0x38: 4x nop (align bl os.Getenv to exact stock call PC +0x38)
