@@ -238,16 +238,25 @@
  "render.semanticMilestoneLines @+0x404 -> `⊹`": [
   "00301e07eb8dfd89"
  ],
+ "render.semanticMilestoneLines @+0x408 -> `⊹`": [
+  "00301e07eb8dfd89"
+ ],
  "render.semanticMilestoneLines @+0x980 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.semanticMilestoneLines @+0x990 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.semanticMilestoneLines @+0x994 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.semanticMilestoneLines @+0x9e8 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.semanticMilestoneLines @+0x9f8 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.semanticMilestoneLines @+0x9fc -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.statusMarker @+0x160 -> `⋆`": [
