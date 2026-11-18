@@ -75,10 +75,12 @@
   "9229990291334ba4"
  ],
  "model.SelectorModel.offersContextWindow -> admit Gemini 4 *": [
-  "205a1fd35ddce402"
+  "205a1fd35ddce402",
+  "41c0847c9e19ecd8"
  ],
  "model.SelectorModel.offersContextWindow -> return true": [
-  "4d17e16971e33181"
+  "4d17e16971e33181",
+  "11b1de4386a362bb"
  ],
  "model.SelectorModel.offersContextWindow -> whitelist miss enters extra-model matcher": [
   "6e0a0312dc758aed"
@@ -93,6 +95,9 @@
   "00301e07eb8dfd89"
  ],
  "render.RenderSubagentItem @+0x5c -> `⋆`": [
+  "8cb21e01aac21050"
+ ],
+ "render.RenderSubagentItem @+0x64 -> `⋆`": [
   "8cb21e01aac21050"
  ],
  "render.RunningDot @+0x24 -> `⊹`": [
@@ -188,13 +193,25 @@
  "render.semanticMilestoneLines @+0x980 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.semanticMilestoneLines @+0x990 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.semanticMilestoneLines @+0x9e8 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.semanticMilestoneLines @+0x9f8 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.statusMarker @+0x160 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.statusMarker @+0x168 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.statusMarker @+0xf4 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.statusMarker @+0xfc -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.stepContent -> a collapsed thought keeps its snippet beside an answer": [
@@ -260,13 +277,25 @@
  "render.toolMarker @+0x110 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.toolMarker @+0x11c -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.toolMarker @+0x1a4 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.toolMarker @+0x1b0 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.toolMarker @+0x210 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.toolMarker @+0x21c -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.toolMarker @+0x27c -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.toolMarker @+0x288 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.workflowAgentRow @+0x150 -> `⊹`": [
@@ -299,7 +328,13 @@
  "render.workflowMarker @+0x16c -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.workflowMarker @+0x174 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.workflowMarker @+0x1d8 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowMarker @+0x1e0 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.workflowMarker @+0x60 -> `⋆`": [

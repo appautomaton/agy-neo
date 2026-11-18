@@ -567,15 +567,21 @@ def _resolve_context_window_sites(
     # 2. model.SelectorModel.offersContextWindow -> return true
     # The anchor stops before `mov x0, #-1; tbnz`, since Site #2a rewrites the mov.
     s2_off = (
-        find_unique_anchor(
+        find_unique_words(
             data,
             funcs["offersContextWindow"],
-            bytes.fromhex("e0e35ef902000014"),
+            ((ldr_x(0, 31), LDR_X_ANY_OFFSET), (0x14000002, 0xFFFFFFFF)),
             "Site 2 (offersContextWindow)",
         )
         + 8
     )
     s2_va = VM_BASE + s2_off
+    s2_patched = bytes.fromhex("200080d2e7ffff17")
+    if struct.unpack_from("<I", data, s2_off - 0x60)[0] != 0xA97FFBFD:
+        raise RuntimeError(f"offersContextWindow epilogue moved from s2 - 0x60 at {hex(s2_va)}")
+    s2_reg = struct.unpack_from("<I", data, s2_off + 8)[0] & 0x1F
+    s2_m_sp = _go_frame(data, funcs["offersContextWindow"]) + 8
+    s2_orig = struct.pack("<II", ldr_x(s2_reg, 31) | ((s2_m_sp // 8) << 10), ldr_x(s2_reg, s2_reg))
 
     # 1a-2b. Admit the CONTEXT_WINDOW_EXTRA_FAMILY where each function misses the ContextWindowSelectable
     # loop. The miss writes `mov x0, #-1` just before `tbnz x0, #63, <miss>`; the entry branches into
@@ -594,6 +600,12 @@ def _resolve_context_window_sites(
     s2b_patched = build_selectable_matcher(
         s2b_va, 2, s2a_va + 8, decode_tbnz_target(data, s2a_off + 4, "Site 2a"), memequal_va
     )
+    for off in range(funcs["offersContextWindow"][0], s2_off, 4):
+        if off == s2a_off:
+            continue
+        target = branch_target(struct.unpack_from("<I", data, off)[0], off)
+        if target is not None and s2b_off <= target < s2b_off + len(s2b_patched):
+            raise RuntimeError(f"Site 2b cave in offersContextWindow reached from {hex(VM_BASE + off)}")
 
     # 3. store.(*Store).ModelMaxTokens -> effective context window limit resolver
     s3_off = mmt_off
@@ -709,8 +721,8 @@ def _resolve_context_window_sites(
             name="model.SelectorModel.offersContextWindow -> return true",
             va=s2_va,
             offset=s2_off,
-            original=bytes.fromhex("f0ff5ef9100240f9"),
-            patched=bytes.fromhex("200080d2e7ffff17"),
+            original=s2_orig,
+            patched=s2_patched,
         ),
         PatchSite(
             domain="context-window",
@@ -725,9 +737,7 @@ def _resolve_context_window_sites(
             name=f"model.SelectorModel.offersContextWindow -> admit {CONTEXT_WINDOW_EXTRA_FAMILY.decode()}*",
             va=s2b_va,
             offset=s2b_off,
-            original=bytes.fromhex(
-                "fbc32c917b1f4091600740a9fb032d917b1f4091620f40a9fb432d917b1f4091641740a9fb832d917b1f4091"
-            ),
+            original=_recoverable(data, s2b_off, s2b_patched),
             patched=s2b_patched,
         ),
         PatchSite(
@@ -1014,6 +1024,7 @@ def _resolve_palette_and_typography_sites(
 
     # 14. render.resolveStyles ("terminal" scheme) -> mouse selection highlight uses native Reverse (\x1b[7m)
     rs_start, rs_end = funcs["resolveStyles"]
+    copy_styles = _copy_styles_insn(data, funcs["resolveStyles"])
     s14_matches: list[int] = []
     pos = rs_start
     pat_len2 = bytes.fromhex("e1037fb2")
@@ -1022,9 +1033,11 @@ def _resolve_palette_and_typography_sites(
         if idx == -1:
             break
         if (
-            data[idx - 0x114 : idx - 0x110] == bytes.fromhex("e1037bb2")
+            idx + 0xA4 <= rs_end
             and data[idx - 0x98 : idx - 0x94] == bytes.fromhex("e10340b2")
+            and data[idx - 0x44 : idx - 0x40] == bytes.fromhex("e10375b2")
             and data[idx + 0x54 : idx + 0x58] == bytes.fromhex("e10376b2")
+            and struct.unpack_from("<I", data, idx + 0xA0)[0] == copy_styles
         ):
             s14_matches.append(idx + 0x6C)
         pos = idx + 1
@@ -1441,7 +1454,21 @@ def _resolve_palette_and_typography_sites(
 # styled, so its elbow takes Styles[+0x0510], the faint style every other elbow in the TUI uses.
 STYLES_ELBOW = 0x510
 COMMAND_ELBOW = "  ⎿  ".encode()
-COPY_STYLE, COPY_STYLES = 0xD2800158, 0xD28067F8  # mov x24, #0xa (one Style) / #0x33f (all of Styles)
+COPY_STYLE = 0xD2800158  # mov x24, #0xa (one Style)
+
+
+def _copy_styles_insn(data: bytes | bytearray, rs_bounds: tuple[int, int]) -> int:
+    """The `mov x24, #N` opening a whole-Styles NEON copy loop (0x33f through v1.5.9, 0x349 in v1.5.10+)."""
+    found = {
+        w
+        for o in range(rs_bounds[0], rs_bounds[1] - 12, 4)
+        if ((w := struct.unpack_from("<I", data, o)[0]) & 0xFFE0001F) == 0xD2800018
+        and ((w >> 5) & 0xFFFF) >= 0x200
+        and struct.unpack_from("<I", data, o + 4)[0] & 0xFFFFFC1F == 0xACC14410
+    }
+    if len(found) != 1:
+        raise RuntimeError(f"resolveStyles: expected one whole-Styles copy loop count, found {[hex(x) for x in found]}")
+    return found.pop()
 
 
 def _decode_sp_add(data: bytes | bytearray, off: int) -> tuple[int, int, int] | None:
@@ -1488,10 +1515,10 @@ def _copy_dest(data: bytes | bytearray, loop_off: int) -> int | None:
     return None
 
 
-def _styles_in_frame(data: bytes | bytearray, bounds: tuple[int, int]) -> int:
+def _styles_in_frame(data: bytes | bytearray, bounds: tuple[int, int], copy_styles: int) -> int:
     """sp offset of a Styles held in the frame: the source of its one whole-Styles copy."""
     words = range(bounds[0], bounds[1], 4)
-    bases = {src[3] for o in words if struct.unpack_from("<I", data, o)[0] == COPY_STYLES and (src := _copy_source(data, o))}
+    bases = {src[3] for o in words if struct.unpack_from("<I", data, o)[0] == copy_styles and (src := _copy_source(data, o))}
     if len(bases) != 1:
         raise RuntimeError(f"Expected one by-value Styles at {hex(VM_BASE + bounds[0])}, found {len(bases)}")
     return bases.pop()
@@ -1506,7 +1533,7 @@ def _frame_size(data: bytes | bytearray, bounds: tuple[int, int]) -> int:
     raise RuntimeError(f"No `sub x20, sp, #frame` prologue at {hex(VM_BASE + bounds[0])}")
 
 
-def _styles_param(data: bytes | bytearray, caller: tuple[int, int], callee: tuple[int, int]) -> int:
+def _styles_param(data: bytes | bytearray, caller: tuple[int, int], callee: tuple[int, int], copy_styles: int) -> int:
     """sp offset, inside `callee`, of the Styles that `caller` passes it by value.
 
     The caller copies Styles to its own `sp + D` before each `bl`; the callee sees that at `sp + frame + D`.
@@ -1517,7 +1544,7 @@ def _styles_param(data: bytes | bytearray, caller: tuple[int, int], callee: tupl
         w = struct.unpack_from("<I", data, off)[0]
         if w >> 26 != 0x25 or branch_target(w, off) != callee[0]:
             continue
-        loop = next((o for o in range(off - 4, off - 160, -4) if struct.unpack_from("<I", data, o)[0] == COPY_STYLES), None)
+        loop = next((o for o in range(off - 4, off - 160, -4) if struct.unpack_from("<I", data, o)[0] == copy_styles), None)
         src = _copy_source(data, loop) if loop else None
         stp_base = (struct.unpack_from("<I", data, loop + 8)[0] >> 5) & 0x1F if loop else None
         dest = _decode_sp_add(data, src[0] - 4) if src else None
@@ -1582,9 +1609,10 @@ def _reply_style_before(data: bytes | bytearray, bounds: tuple[int, int], styles
 
 def _resolve_command_elbow_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
     """Sites #48a-#48d: the elbows under a command's output or an alert match the reply, not the user bar."""
+    copy_styles = _copy_styles_insn(data, funcs["resolveStyles"])
     rco, rsl, rol = funcs["renderCommandOutput"], funcs["renderStyledLines"], funcs["renderOutputLines"]
-    rco_styles = _styles_in_frame(data, rco)
-    rsl_styles, rol_styles = _styles_param(data, rco, rsl), _styles_param(data, rco, rol)
+    rco_styles = _styles_in_frame(data, rco, copy_styles)
+    rsl_styles, rol_styles = _styles_param(data, rco, rsl, copy_styles), _styles_param(data, rco, rol, copy_styles)
     # renderOutputLines(lineStyle, _, styles, ...): its first stack argument styles each output line.
     rol_line = _frame_size(data, rol) + 8
     if not any(
