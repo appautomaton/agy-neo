@@ -22,6 +22,17 @@ agy_bin=$HOME/.local/bin/agy
   fi
 }
 
+# Preserve macOS Keychain OAuth when SSH_* variables leak into a Keychain-capable session
+# (e.g., a local Aqua tmux server attached over SSH, where update-environment injects
+# SSH_CONNECTION into new panes, or an SSH session with an explicitly unlocked login keychain).
+# SSH_AUTH_SOCK is intentionally left intact so forwarded SSH agents keep working.
+if [[ -n "${SSH_TTY:-}${SSH_CLIENT:-}${SSH_CONNECTION:-}" ]]; then
+  if [[ "$(/bin/launchctl managername 2>/dev/null)" == "Aqua" ]] ||
+     /usr/bin/security show-keychain-info "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then
+    unset SSH_TTY SSH_CLIENT SSH_CONNECTION
+  fi
+fi
+
 # Local gateway settings (CLIProxyAPI). Built-in catalog IDs keep "(Low|Medium|High|XHigh)"
 # labels for effort gauges and send base model + thinkingConfig.thinkingLevel on the wire.
 # Routing via AGY_LLM_GATEWAY_* keeps sessions on modelapiccpa -> StreamGenerateContentFromGateway,
@@ -36,7 +47,7 @@ use_local_gateway() {
   export AGY_LLM_GATEWAY_URL="${AGY_LLM_GATEWAY_URL:-$GOOGLE_GEMINI_BASE_URL}"
   export AGY_LLM_GATEWAY_API_KEY="${AGY_LLM_GATEWAY_API_KEY:-$GEMINI_API_KEY}"
   export AGY_LLM_GATEWAY_WIRE_PROTOCOL="${AGY_LLM_GATEWAY_WIRE_PROTOCOL:-genai}"
-  export AGY_LLM_GATEWAY_MODELS="${AGY_LLM_GATEWAY_MODELS:-gemini-4-carbon-low,gemini-4-carbon-medium,gemini-4-carbon-high,gemini-4-argon-low,gemini-4-argon-medium,gemini-4-argon-high,gemini-4-hydrogen-low,gemini-4-hydrogen-medium,gemini-4-hydrogen-high,gemini-4-hydrogen-xhigh,gemini-3.8-flash-medium,gemini-3.8-flash-high}"
+  export AGY_LLM_GATEWAY_MODELS="${AGY_LLM_GATEWAY_MODELS:-gemini-4-neon-low,gemini-4-neon-medium,gemini-4-neon-high,gemini-4-neon-xhigh,gemini-4-carbon-low,gemini-4-carbon-medium,gemini-4-carbon-high,gemini-4-argon-low,gemini-4-argon-medium,gemini-4-argon-high,gemini-4-hydrogen-low,gemini-4-hydrogen-medium,gemini-4-hydrogen-high,gemini-4-hydrogen-xhigh,gemini-3.8-flash-medium,gemini-3.8-flash-high}"
   # Background tiers: titles and command safety checks (flash_lite), subagents (flash, pro).
   export AGY_LLM_GATEWAY_TIER_FLASH_LITE="${AGY_LLM_GATEWAY_TIER_FLASH_LITE:-gemini-4-hydrogen-low}"
   export AGY_LLM_GATEWAY_TIER_FLASH="${AGY_LLM_GATEWAY_TIER_FLASH:-gemini-4-hydrogen-high}"

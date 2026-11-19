@@ -136,6 +136,12 @@ TARGET_SYMBOLS: dict[str, str] = {
     "mapdeleteFaststr": "runtime.mapdelete_faststr",
     "thoughtBodyRows": "google3/third_party/jetski/cli/render/render.thoughtBodyRows",
     "isInFlightThinkingOnly": "google3/third_party/jetski/cli/render/render.isInFlightThinkingOnly",
+    "defaultmodelsInit": "google3/third_party/jetski/models/defaults/defaultmodels.init",
+    "Gemini36Flash": "google3/third_party/jetski/models/defaults/defaultmodels.Gemini36Flash",
+    "Gemini37Flash": "google3/third_party/jetski/models/defaults/defaultmodels.Gemini37Flash",
+    "GeminiModelInfo": "google3/third_party/jetski/models/defaults/defaultmodels.GeminiModelInfo",
+    "geminiCatalog": "google3/third_party/jetski/models/geminimodels/geminimodels.Catalog",
+    "geminiDetails": "google3/third_party/jetski/models/geminimodels/geminimodels.details",
 }
 
 # 1M-window models that upstream `backend.ContextWindowSelectable` (["Gemini 4 Argon"]) omits. Sites
@@ -1063,17 +1069,17 @@ def _resolve_palette_and_typography_sites(
     s16_va = VM_BASE + s16_off
 
     # 17 & 18. render.glamourStyleForScheme -> decouple inline `code` (Code.Color) from palette[+0x020] to palette[+0x0d0] (ANSI 3)
-    g_post = bytes.fromhex("a10200b4e0037cb2")
-    s17_off = (
-        find_unique_anchor(
-            data,
-            funcs["glamourStyleForScheme"],
-            g_post,
-            "Site 17 (glamourStyleForScheme Code.Color check)",
-        )
-        - len(g_post)
-        - 4
-    )
+    gs_start, gs_end = funcs["glamourStyleForScheme"]
+    s17_matches = [
+        o for o in range(gs_start, gs_end - 0x24, 4)
+        if struct.unpack_from("<I", data, o)[0] in (0xF9402FE1, 0xF94087E1)
+        and struct.unpack_from("<I", data, o + 4)[0] & 0xFF00001F == 0xB4000001
+        and struct.unpack_from("<I", data, o + 8)[0] == 0xB27C03E0
+        and struct.unpack_from("<I", data, o + 0x20)[0] in (0xA94587E0, 0xA95087E0)
+    ]
+    if len(s17_matches) != 1:
+        raise RuntimeError(f"Expected 1 match for Site 17 (glamourStyleForScheme Code.Color check), got {len(s17_matches)}")
+    s17_off = s17_matches[0]
     s17_va = VM_BASE + s17_off
     s18_off = s17_off + 0x20
     s18_va = VM_BASE + s18_off
@@ -1120,7 +1126,7 @@ def _resolve_palette_and_typography_sites(
     #   Site 24: replace `───` rule setup with full-width background (`s.props=0x2800`, `s.width=termWidth`) + inline strings
     #   Site 22: prepend dimmed Faint `> ` ("\x1b[2m> \x1b[22m") while keeping Styles[+0x0000].Render
     #   Site 25: return strings.Join(lines, "\n") directly without `rule + "\n"`
-    rup_start, _ = funcs["renderUserPrompt"]
+    rup_start, rup_end = funcs["renderUserPrompt"]
     s24_off = find_unique_anchor(
         data,
         funcs["renderUserPrompt"],
@@ -1129,34 +1135,74 @@ def _resolve_palette_and_typography_sites(
     )
     s24_va = VM_BASE + s24_off
     s24_orig = bytes(data[s24_off : s24_off + 72])
+    rup_styles_off = _go_frame(data, funcs["renderUserPrompt"]) + 8
+    w_slice, w_rule_ptr, w_rule_len = (
+        struct.unpack_from("<I", data, s24_off + 0x5C)[0],
+        struct.unpack_from("<I", data, s24_off + 0x6C)[0],
+        struct.unpack_from("<I", data, s24_off + 0x70)[0],
+    )
+    if (
+        w_slice & 0xFFC003FF != 0x910003E0
+        or w_rule_ptr & 0xFFC003FF != 0xF90003E0
+        or w_rule_len & 0xFFC003FF != 0xF90003E1
+    ):
+        raise RuntimeError("renderUserPrompt: rule slice or string spill slots moved")
+    rup_slice_slot = (w_slice >> 10) & 0xFFF
+    rup_rule_ptr_slot = ((w_rule_ptr >> 10) & 0xFFF) * 8
+    rup_rule_len_slot = ((w_rule_len >> 10) & 0xFFF) * 8
     ldrb_w5_x4 = struct.pack("<I", 0x39400085 | (bg_byte_imm12 << 10))
     strb_w5_x4 = struct.pack("<I", 0x39000085 | (bg_byte_imm12 << 10))
+    add_x4_styles = struct.pack("<I", 0x910003E4 | (rup_styles_off << 10))
+    zero_rule_slots = struct.pack(
+        "<III",
+        _str_sp(31, rup_slice_slot),
+        _str_sp(31, rup_rule_ptr_slot),
+        _str_sp(31, rup_rule_len_slot),
+    )
     s24_patched = (
         encode_adrp(s24_va, bg_byte_va, 4)
         + ldrb_w5_x4
         + bytes.fromhex("bf000071a61d8052c500851a")
         + strb_w5_x4
-        + bytes.fromhex("e4630e91050085d2850000f9823c00f9")
-        + bytes.fromhex("ffbf01f9ff8f01f9ff6b01f910000014")
+        + add_x4_styles
+        + bytes.fromhex("050085d2850000f9823c00f9")
+        + zero_rule_slots
+        + bytes.fromhex("10000014")
         + bytes.fromhex("1b5b326d3e201b5b32326d000a0a0a00")
     )
+    if s24_orig == s24_patched:
+        s24_orig = None
     chev_va = s24_va + 56
     nl3_va = s24_va + 68
 
-    rup_base = find_unique_anchor(
-        data,
-        funcs["renderUserPrompt"],
-        bytes.fromhex("7dffff17fbe30d917f7f00a9e0031faa"),
-        "Site 22 (renderUserPrompt first line)",
-    )
-    s22_off = rup_base
+    add_x27_slice = 0x910003FB | (rup_slice_slot << 10)
+    s22_pat_at = lambda off: encode_adr(VM_BASE + off, chev_va, 1) + bytes.fromhex("1f2003d5620180d2")
+    s22_matches = [
+        o for o in range(rup_start + 12, rup_end - 24, 4)
+        if struct.unpack_from("<III", data, o - 12) == (add_x27_slice, 0xA9007F7F, 0xAA1F03E0)
+        and struct.unpack_from("<I", data, o + 12)[0] & 0xFFE0FFFF == 0xAA0003E3
+        and branch_target(struct.unpack_from("<I", data, o + 20)[0], o + 20) == funcs["concatstring2"][0]
+        and (
+            bytes(data[o : o + 12]) == s22_pat_at(o)
+            or (
+                struct.unpack_from("<I", data, o + 8)[0] == 0xB27F03E2
+                and bytes(data[decode_adrp_add(data, o) - VM_BASE :][:2]) == b"> "
+            )
+        )
+    ]
+    if len(s22_matches) != 1:
+        raise RuntimeError(f"Expected 1 match for Site 22 (renderUserPrompt first line), got {len(s22_matches)}")
+    s22_off = s22_matches[0]
     s22_va = VM_BASE + s22_off
-    s22_orig = bytes(data[s22_off : s22_off + 12])
-    s22_patched = encode_adr(s22_va, chev_va, 1) + bytes.fromhex("1f2003d5620180d2")
+    s22_patched = s22_pat_at(s22_off)
+    s22_orig = _recoverable(data, s22_off, s22_patched)
 
-    s25_off = rup_base + 0x104
+    joins = _calls_to(data, funcs["renderUserPrompt"], funcs["stringsJoin"][0])
+    if len(joins) != 1 or struct.unpack_from("<I", data, joins[0] + 4 + 0x24)[0] != 0xA97FFBFD:
+        raise RuntimeError("renderUserPrompt: expected one strings.Join before the final rule concat")
+    s25_off = joins[0] + 4
     s25_va = VM_BASE + s25_off
-    s25_orig = bytes.fromhex("e26b41f9")
+    s25_orig = struct.pack("<I", _ldr_sp(2, rup_rule_len_slot))
     s25_patched = bytes.fromhex("09000014")
 
     # 26-29. render.StickyPrompt & ConversationModel ->
@@ -1974,12 +2020,12 @@ def _resolve_spinner_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
         raise RuntimeError(f"pendingLineView: expected one pendingDecoration call, found {len(tails)}")
     c = tails[0]
     ldr_sp = lambda rt, imm: 0xF94003E0 | (imm // 8) << 10 | rt
-    str_imm = lambda w: ((w >> 10) & 0xFFF) * 8
-    if word(c - 12) & 0xFFC003FF != 0xF90003E1 or word(c - 8) & 0xFFC003FF != 0xF90003E0:  # str x1/x0, [sp, #...]
-        raise RuntimeError("pendingLineView no longer spills its line before pendingDecoration")
-    len_slot, ptr_slot = str_imm(word(c - 12)), str_imm(word(c - 8))
     join, out = c + 0x14, branch_target(word(c + 16), c + 16)
     call3 = join + 0x20
+    p_sl, l_sl = _sp_slot(word(join + 0x10), 0xF94003E0), _sp_slot(word(join + 0x14), 0xF94003E0)
+    if p_sl is None or p_sl[0] != 5 or l_sl is None or l_sl[0] != 6:
+        raise RuntimeError("pendingLineView no longer loads its spilled line in the decoration join")
+    ptr_slot, len_slot = p_sl[1], l_sl[1]
     if (branch_target(word(c + 4), c + 4) != join or branch_target(word(call3), call3) != funcs["concatstring3"][0]
             or word(c + 16) >> 26 != 0x05 or word(join) not in (0xAA0103E2, *struct.unpack("<I", encode_b(VM_BASE + join, VM_BASE + _gap_leaf_base(data))))):
         raise RuntimeError("pendingLineView's tail no longer joins decoration, newline and line")
@@ -2436,39 +2482,46 @@ def _resolve_elapsed_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
     m_slot = next((((w >> 15) & 0x7F) * 8 for o, w in _words(data, (pv[0], pv[0] + 0x30)) if w & 0xFFC07FFF == 0xA90007E0), None)
     if m_slot is None:
         raise RuntimeError("pendingLineView: the receiver spill is gone")
-    reserve = [o for o, w in _words(data, pv) if w in (0xD1000C62, 0xD1000062 | (ELAPSED_RESERVE << 10))]
-    if len(reserve) != 1:
-        raise RuntimeError(f"pendingLineView: expected one `width - 3` truncation budget, found {len(reserve)}")
-    gate = [o for o in range(reserve[0] - 0x40, reserve[0], 4)
+    reserve = [
+        o for o, w in _words(data, pv)
+        if w & 0xFFC00000 == 0xD1000000 and ((w >> 10) & 0xFFF) in (3, ELAPSED_RESERVE)
+    ]
+    if len(reserve) not in (1, 2):
+        raise RuntimeError(f"pendingLineView: expected 1 or 2 `width - 3` truncation budgets, found {len(reserve)}")
+    trunc_reserve = reserve[-1]
+    gate = [o for o in range(trunc_reserve - 0x40, trunc_reserve, 4)
             if word(o) & 0xFF00001F == 0xB4000001  # cbz x1, other_path (x1 = the status's length)
-            or (bytes(data[o : o + 4]) == NOP and word(o - 4) & 0xFFC003FF == 0xF94003E1)]
+            or bytes(data[o : o + 4]) == NOP]
     if len(gate) != 1:
         raise RuntimeError("pendingLineView: the right-hand status test is gone")
-    repeats = [o for o in _calls_to(data, pv, funcs["stringsRepeat"][0]) if o > reserve[0]]
-    repeats += [o for o in _calls_to(data, pv, cl[0]) if o > reserve[0]]
-    if len(repeats) != 1 or word(repeats[0] - 20) != 0xF100007F:
+    repeats = [o for o in _calls_to(data, pv, funcs["stringsRepeat"][0]) if o > trunc_reserve]
+    repeats += [o for o in _calls_to(data, pv, cl[0]) if o > trunc_reserve]
+    if len(repeats) != 1 or word(repeats[0] - 20) & 0xFFFFFC1F != 0xF100001F:
         raise RuntimeError("pendingLineView: expected one padding `strings.Repeat` after the truncation")
     rp = repeats[0]
+    pad_rn = (word(rp - 20) >> 5) & 0x1F
     site("model.(*ConversationModel).pendingLineView -> lay out text, suffix, status even with no status",
          gate[0], NOP)
+    if len(reserve) == 2:
+        site(f"model.(*ConversationModel).pendingLineView -> statusSlot.fit gives {ELAPSED_RESERVE} columns to the suffix",
+             reserve[0], pack((word(reserve[0]) & 0xFFC003FF) | (ELAPSED_RESERVE << 10)))
     site(f"model.(*ConversationModel).pendingLineView -> the text gives {ELAPSED_RESERVE} columns to the suffix",
-         reserve[0], pack(0xD1000062 | (ELAPSED_RESERVE << 10)))
+         trunc_reserve, pack((word(trunc_reserve) & 0xFFC003FF) | (ELAPSED_RESERVE << 10)))
     site("model.(*ConversationModel).pendingLineView -> padding comes from elapsedSuffix(m, pad)", rp - 16,
-         pack(0x9A9FA061, _ldr_sp(0, m_slot), 0xAA1F03E2, 0xAA1F03E5)  # csel x1, x3, xzr, ge; m; x2 = x5 = nil
+         pack(0x9A9FA001 | (pad_rn << 5), _ldr_sp(0, m_slot), 0xAA1F03E2, 0xAA1F03E5)  # csel x1, xPad, xzr, ge; m; x2 = x5 = nil
          + encode_bl(VM_BASE + rp, VM_BASE + cl[0]))
 
-    # 50h. View passes a hide-status flag while a tip shows, and `tbnz w2, #0, short` then builds frame
-    # and text alone: the status goes, and with it the padding that carries the elapsed time. The short
-    # path instead empties the status (its length and its measured width, both scalar slots) and joins
-    # the full one, so the time stays and the status stays hidden. x0 still holds the frame's width.
-    hide, full = gate[0] + 8, gate[0] + 12
-    len_slot, width_slot = _sp_slot(word(gate[0] - 4), 0xF94003E0), _sp_slot(word(full + 4), 0xF94003E0)
-    if (word(hide) & 0xFFF8001F != 0x37000002 or len_slot is None or len_slot[0] != 1  # ldr x1, [sp, #len]; tbnz w2, #0
-            or _sp_slot(word(full), 0xF90003E0) is None or width_slot is None or width_slot[0] != 3):  # str x0; ldr x3, [sp, #width]
-        raise RuntimeError("pendingLineView: the hide-status test or the full path's first loads moved")
-    short = hide + ((((word(hide) >> 5) & 0x3FFF) ^ 0x2000) - 0x2000) * 4
-    site("model.(*ConversationModel).pendingLineView -> a tip hides the status, not the elapsed time", short,
-         pack(_str_sp(31, len_slot[1]), _str_sp(31, width_slot[1])) + encode_b(VM_BASE + short + 8, VM_BASE + full))
+    # 50h. Through v1.5.11, `tbnz w2, #0, short` bypassed the full path when a tip hid the status; v1.5.12+
+    # already zeroes status `(ptr, len)` before `gate[0]`, so turning `gate[0]` into `nop` keeps elapsedSuffix.
+    if len(reserve) == 1:
+        hide, full = gate[0] + 8, gate[0] + 12
+        len_slot, width_slot = _sp_slot(word(gate[0] - 4), 0xF94003E0), _sp_slot(word(full + 4), 0xF94003E0)
+        if (word(hide) & 0xFFF8001F != 0x37000002 or len_slot is None or len_slot[0] != 1  # ldr x1, [sp, #len]; tbnz w2, #0
+                or _sp_slot(word(full), 0xF90003E0) is None or width_slot is None or width_slot[0] != 3):  # str x0; ldr x3, [sp, #width]
+            raise RuntimeError("pendingLineView: the hide-status test or the full path's first loads moved")
+        short = hide + ((((word(hide) >> 5) & 0x3FFF) ^ 0x2000) - 0x2000) * 4
+        site("model.(*ConversationModel).pendingLineView -> a tip hides the status, not the elapsed time", short,
+             pack(_str_sp(31, len_slot[1]), _str_sp(31, width_slot[1])) + encode_b(VM_BASE + short + 8, VM_BASE + full))
     return tuple(sites)
 
 
@@ -3933,6 +3986,131 @@ def _resolve_keepalive_sites(
 
     return tuple(sites)
 
+def _resolve_neon_gateway_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
+    """Register Gemini 4 Neon (0x5b9..0x5bc, low..xhigh) in defaultmodels.ModelInfos when geminimodels ships
+    neonDetails without defaultmodels entries (v1.5.12), so Enterprise Gateway LookupModelInfo resolves Neon
+    with its display labels, 1M context window, and thinkingLevel LOW..XHIGH. Retires once defaultmodels has Neon.
+    """
+    word = lambda o: struct.unpack_from("<I", data, o)[0]
+    pack = lambda *ws: b"".join(struct.pack("<I", w) for w in ws)
+    movz = lambda rd, imm: 0xD2800000 | (imm << 5) | rd
+
+    cat = funcs["geminiCatalog"]
+    det_off = funcs["geminiDetails"][0]
+    neon_calls = [
+        o + 8 for o in range(cat[0], cat[1] - 0x30, 4)
+        if word(o) in (movz(0, 0x5B9), movz(0, 0x5BA), movz(0, 0x5BB), movz(0, 0x5BC))
+        and word(o + 8) >> 26 == 0x25
+    ]
+    if not neon_calls:
+        return ()  # pre-v1.5.12 (no Neon in Catalog)
+    neon_targets = {branch_target(word(c), c) for c in neon_calls}
+    if det_off in neon_targets:
+        return ()  # upstream registered Neon in defaultmodels.ModelInfos itself
+    if len(neon_calls) != 4 or len(neon_targets) != 1:
+        raise RuntimeError(f"geminimodels.Catalog: expected 4 calls to neonDetails, found {len(neon_calls)}")
+    neon_det = neon_targets.pop()
+
+    # Extract `"Gemini 4 Neon"` VA from neonDetails, and the 4 `"gemini-4-neon-*"` VAs from Catalog.
+    gmi_calls = _calls_to(data, (neon_det, neon_det + 0x60), funcs["GeminiModelInfo"][0])
+    if len(gmi_calls) != 1:
+        raise RuntimeError("geminimodels.neonDetails no longer calls defaultmodels.GeminiModelInfo once")
+    neon_disp_va = decode_adrp_add(data, gmi_calls[0] - 12)
+    if bytes(data[neon_disp_va - VM_BASE : neon_disp_va - VM_BASE + 13]) != b"Gemini 4 Neon":
+        raise RuntimeError("geminimodels.neonDetails no longer loads 'Gemini 4 Neon'")
+
+    slug_vas: dict[int, tuple[int, int]] = {}
+    expected_slugs = {
+        0x5B9: b"gemini-4-neon-low",
+        0x5BA: b"gemini-4-neon-medium",
+        0x5BB: b"gemini-4-neon-high",
+        0x5BC: b"gemini-4-neon-xhigh",
+    }
+    for c in neon_calls:
+        enum_id = (word(c - 8) >> 5) & 0xFFFF
+        sva = decode_adrp_add(data, c + 0x14)
+        exp = expected_slugs[enum_id]
+        if bytes(data[sva - VM_BASE : sva - VM_BASE + len(exp)]) != exp:
+            raise RuntimeError(f"geminimodels.Catalog: unexpected Neon slug at {hex(VM_BASE + c + 0x14)}")
+        slug_vas[enum_id] = (sva, len(exp))
+
+    sites: list[PatchSite] = []
+    def site(name: str, off: int, patched: bytes) -> None:
+        sites.append(PatchSite("neon-gateway", name, VM_BASE + off, off, _recoverable(data, off, patched), patched))
+
+    # 1. defaultmodels.Gemini36Flash -> Neon ModelInfo builder (levels 1..3 -> 0x5b9..0x5bb, 7 -> 0x5bc).
+    g36 = funcs["Gemini36Flash"]
+    g36_gmi = _calls_to(data, g36, funcs["GeminiModelInfo"][0])
+    if len(g36_gmi) != 1 or g36_gmi[0] - g36[0] < 0x60:
+        raise RuntimeError("defaultmodels.Gemini36Flash: unexpected layout before GeminiModelInfo")
+    b_off = g36_gmi[0] - 0x48
+    err_off = g36_gmi[0] + 0x18
+    b_va = VM_BASE + b_off
+    builder = (
+        pack(0x51000443, 0x7100087F, 0x5280B704, 0x0B020084)           # sub w3, w2, #1; cmp w3, #2; mov w4, #0x5b8; add w4, w4, w2
+        + encode_b_cond(b_va + 0x10, b_va + 0x2C, 0x9)                 # b.ls +0x1c (to +0x2c)
+        + pack(0x71001C5F)                                             # cmp w2, #7
+        + encode_b_cond(b_va + 0x18, VM_BASE + err_off, 0x1)           # b.ne unsupportedThinkingLevel
+        + pack(movz(4, 0x5BC))                                         # mov x4, #0x5bc
+        + NOP * 4                                                      # pad +0x20..+0x2c
+        + pack(0xAA0203E5, 0xAA0003E2, 0xAA0103E3)                     # mov x5, x2; mov x2, x0; mov x3, x1
+        + encode_adrp_add(b_va + 0x3C, neon_disp_va, 0)                # x0 = "Gemini 4 Neon"
+        + pack(movz(1, 13))                                            # x1 = 13
+    )
+    assert len(builder) == 0x48
+    site("defaultmodels.Gemini36Flash -> build Gemini 4 Neon (Low..XHigh) ModelInfo", b_off, builder)
+
+    # 2. defaultmodels.init -> populate the 4 Neon efforts in the 3.6 Flash (high, med, low) + 3.7 Flash low slots.
+    dinit = funcs["defaultmodelsInit"]
+    c36 = _calls_to(data, dinit, g36[0])
+    c37 = _calls_to(data, dinit, funcs["Gemini37Flash"][0])
+    if len(c36) == 3 and len(c37) >= 1:
+        donors = [*c36, c37[0]]
+    elif len(c36) == 4:
+        donors = c36
+    else:
+        raise RuntimeError(f"defaultmodels.init: unexpected Gemini36Flash/37Flash call counts ({len(c36)}, {len(c37)})")
+
+    for call_off, enum_id, label in zip(donors[:3], (0x5BB, 0x5BA, 0x5B9), ("high", "medium", "low")):
+        sva, slen = slug_vas[enum_id]
+        arg_off = call_off - 16
+        patched = encode_adrp_add(VM_BASE + arg_off, sva, 0) + pack(movz(1, slen))
+        site(f"defaultmodels.init -> register gemini-4-neon-{label} in ModelInfos", arg_off, patched)
+
+    xh_call = donors[3]
+    xh_off = xh_call - 16
+    xh_sva, xh_slen = slug_vas[0x5BC]
+    xh_patched = (
+        encode_adrp_add(VM_BASE + xh_off, xh_sva, 0)
+        + pack(movz(1, xh_slen), 0xB2400BE2)                           # orr x2, xzr, #7 (XHigh)
+        + encode_bl(VM_BASE + xh_call, VM_BASE + g36[0])
+    )
+    site("defaultmodels.init -> register gemini-4-neon-xhigh in ModelInfos", xh_off, xh_patched)
+
+    # 3. geminimodels.Catalog -> skip the 4 contiguous retired Flash donor entries (`3.6-flash-{low,medium,high}`,
+    # `3.7-flash-low`) so Catalog neither panics on their missing ModelInfos nor collides with Neon's 0x5b9..0x5bc enums.
+    det_calls = _calls_to(data, cat, det_off)
+    def cat_entry(key_bytes: bytes) -> int:
+        matches = [
+            d - 4 for d in det_calls
+            if word(d + 0x40) & 0x9F00001F == 0x90000002
+            and word(d + 0x48) == movz(3, len(key_bytes))
+            and bytes(data[decode_adrp_add(data, d + 0x40) - VM_BASE :][: len(key_bytes)]) == key_bytes
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(f"geminimodels.Catalog: expected 1 details() entry for {key_bytes.decode()}, found {len(matches)}")
+        return matches[0]
+
+    skip_from = cat_entry(b"gemini-3.6-flash-low")
+    skip_to = cat_entry(b"gemini-3.7-flash-medium")
+    if not (skip_from < cat_entry(b"gemini-3.6-flash-medium") < cat_entry(b"gemini-3.6-flash-high") < cat_entry(b"gemini-3.7-flash-low") < skip_to):
+        raise RuntimeError("geminimodels.Catalog: retired Flash donor entries are no longer contiguous before 3.7-flash-medium")
+    site("geminimodels.Catalog -> skip retired 3.6 Flash / 3.7 Flash Low donor entries", skip_from,
+         encode_b(VM_BASE + skip_from, VM_BASE + skip_to))
+
+    return tuple(sites)
+
+
 def _resolve_prompt_template_sites(data: bytes | bytearray, version: str, strict: bool) -> tuple[PatchSite, ...]:
     """Templates that templates/v<version>/system_prompts/ changes from stock (see prompt_templates.py)."""
     return tuple(
@@ -3956,6 +4134,7 @@ def _resolve_groups(data: bytes | bytearray, version: str, strict: bool) -> dict
             out[name] = exc
 
     run("context-window", lambda: _resolve_context_window_sites(data, funcs))
+    run("neon-gateway", lambda: _resolve_neon_gateway_sites(data, funcs))
     # -> (pre, post, nl3_va, sticky_cave). Site #29's dead span holds the color-scheme matcher (Site #47).
     run("palette-typography", lambda: _resolve_palette_and_typography_sites(data, funcs))
     cave = lambda: out["palette-typography"][3]
@@ -4000,7 +4179,7 @@ def resolve_patch_sites(data: bytes | bytearray, version: str, strict: bool = Fa
     pal_pre, pal_post, _, _ = out["palette-typography"]
     cot_step_sites, cot_strip_site = out["cot-rendering"]
     return (
-        *out["context-window"], *cot_step_sites, *pal_pre, out["statusline-refresh"], *pal_post, cot_strip_site,
+        *out["context-window"], *out["neon-gateway"], *cot_step_sites, *pal_pre, out["statusline-refresh"], *pal_post, cot_strip_site,
         *out["tool-monitors"], *out["color-scheme"], *out["command-elbow"], *out["spinner"],
         *out["pending-line"], *out["pending-verbs"], *out["tool-marks"], *out["code-theme"], *out["live-thinking"], *out["thought-grouping"], *out["thought-block"],
         *out["cache-keepalive"],

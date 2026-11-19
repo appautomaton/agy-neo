@@ -52,6 +52,7 @@ import prompt_templates
 DEFAULT_BINARY = Path.home() / ".local/bin/agy"
 STATE_DIR = Path.home() / ".gemini" / capture_prompt.STATE_SUBDIR
 WIRE_MODELS = [
+    *(f"gemini-4-neon-{e}" for e in ("low", "medium", "high", "xhigh")),
     *(f"gemini-4-hydrogen-{e}" for e in ("low", "medium", "high", "xhigh")),
     *(f"gemini-4-carbon-{e}" for e in ("low", "medium", "high")),
     *(f"gemini-4-argon-{e}" for e in ("low", "medium", "high")),

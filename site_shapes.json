@@ -14,6 +14,24 @@
  "config.applyFeatureProviderCheckpointOverrideConfig -> zero expCp.MaxTokenLimit": [
   "8db83f9833aba2f0"
  ],
+ "defaultmodels.Gemini36Flash -> build Gemini 4 Neon (Low..XHigh) ModelInfo": [
+  "de8732d10981d242"
+ ],
+ "defaultmodels.init -> register gemini-4-neon-high in ModelInfos": [
+  "2358cb7f3f54558c"
+ ],
+ "defaultmodels.init -> register gemini-4-neon-low in ModelInfos": [
+  "beb0feeeca19f72f"
+ ],
+ "defaultmodels.init -> register gemini-4-neon-medium in ModelInfos": [
+  "c64fe9782fe4bba1"
+ ],
+ "defaultmodels.init -> register gemini-4-neon-xhigh in ModelInfos": [
+  "886b4173831c26f7"
+ ],
+ "geminimodels.Catalog -> skip retired 3.6 Flash / 3.7 Flash Low donor entries": [
+  "a3d4c2c5654723fe"
+ ],
  "halloween.init -> reserve __noptrbss uint64 (packed telemetry)": [
   "c9ecc984c52e940d"
  ],
@@ -48,7 +66,11 @@
   "ae4fb47c7ec66802"
  ],
  "model.(*ConversationModel).pendingLineView -> padding comes from elapsedSuffix(m, pad)": [
-  "31f67de5b61bc245"
+  "31f67de5b61bc245",
+  "a0dc4cf363fa4169"
+ ],
+ "model.(*ConversationModel).pendingLineView -> statusSlot.fit gives 50 columns to the suffix": [
+  "700bab2bd91b5f7d"
  ],
  "model.(*ConversationModel).pendingLineView -> the frame keeps its one space; no second": [
   "db453276c8697538"
@@ -57,7 +79,8 @@
   "3ada1dca97c0867c"
  ],
  "model.(*ConversationModel).pendingLineView -> the text gives 50 columns to the suffix": [
-  "f103475e6f4e3e49"
+  "f103475e6f4e3e49",
+  "bdc5c2efa50a15de"
  ],
  "model.(*ConversationModel).pinHeader -> 1-line sticky header height": [
   "bdc5c2efa50a15de"

@@ -300,11 +300,12 @@ SEG_BG+=("$MODE_BG")
 SEG_TXT+=("$MODE_GLYPH")
 
 # ─── 6. Atomic Block 2: Selected Model + Thinking Effort (Pastel Lavender) ────
-# Periodic-table shorthand for Gemini 4 families: Carbon -> C, Argon -> Ar, Hydrogen -> H,
-# paired with low | med | high | xhigh (e.g. C-med, Ar-high, H-xhigh).
+# Periodic-table shorthand for Gemini 4 families: Neon -> Ne, Carbon -> C, Argon -> Ar,
+# Hydrogen -> H, paired with low | med | high | xhigh (e.g. Ne-xhigh, C-med, Ar-high, H-xhigh).
 local MODEL_PROBE="${MODEL_ID:l} ${MODEL_DISPLAY:l}"
 local MODEL_ABBR=""
 case "$MODEL_PROBE" in
+  *neon*)     MODEL_ABBR="Ne" ;;
   *carbon*)   MODEL_ABBR="C" ;;
   *argon*)    MODEL_ABBR="Ar" ;;
   *hydrogen*) MODEL_ABBR="H" ;;
