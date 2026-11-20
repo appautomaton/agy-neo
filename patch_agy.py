@@ -144,6 +144,11 @@ TARGET_SYMBOLS: dict[str, str] = {
     "geminiDetails": "google3/third_party/jetski/models/geminimodels/geminimodels.details",
 }
 
+# Symbols present only in newer releases (used to auto-retire patches upstream superseded).
+OPTIONAL_SYMBOLS: dict[str, str] = {
+    "Gemini4Neon": "google3/third_party/jetski/models/defaults/defaultmodels.Gemini4Neon",
+}
+
 # 1M-window models that upstream `backend.ContextWindowSelectable` (["Gemini 4 Argon"]) omits. Sites
 # #1a-#2b admit every base name with this prefix (Carbon, Hydrogen); it must fit their 16-byte slot.
 CONTEXT_WINDOW_EXTRA_FAMILY = b"Gemini 4 "
@@ -372,8 +377,9 @@ def locate_target_functions(data: bytes | bytearray) -> dict[str, tuple[int, int
     hdr_key = f"{len(data)}:{hashlib.blake2b(bytes(data[:4096]), digest_size=8).hexdigest()}:{sym_sig}"
     cache = _load_meta_cache()
     cached_bounds = cache.get("pclntab", {}).get(hdr_key)
-    if isinstance(cached_bounds, dict) and set(cached_bounds) == set(TARGET_SYMBOLS):
-        return {k: (v[0], v[1]) for k, v in cached_bounds.items()}
+    all_keys = set(TARGET_SYMBOLS) | set(OPTIONAL_SYMBOLS)
+    if isinstance(cached_bounds, dict) and set(cached_bounds) == all_keys:
+        return {k: (v[0], v[1]) for k, v in cached_bounds.items() if v is not None}
 
     magic, _, _, _, ncmds, _, _, _ = struct.unpack_from("<IIIIIIII", data, 0)
     if magic != MH_MAGIC_64:
@@ -408,7 +414,7 @@ def locate_target_functions(data: bytes | bytearray) -> dict[str, tuple[int, int
     funcnametab_off = gopcln_off + struct.unpack_from("<Q", data, gopcln_off + 32)[0]
     functab_off = gopcln_off + struct.unpack_from("<Q", data, gopcln_off + 64)[0]
 
-    reverse_map = {sym.encode("utf-8"): key for key, sym in TARGET_SYMBOLS.items()}
+    reverse_map = {sym.encode("utf-8"): key for key, sym in (*TARGET_SYMBOLS.items(), *OPTIONAL_SYMBOLS.items())}
     found: dict[str, tuple[int, int]] = {}
     text_file_base = text_addr - VM_BASE
 
@@ -421,13 +427,13 @@ def locate_target_functions(data: bytes | bytearray) -> dict[str, tuple[int, int
         if key is not None:
             next_entry_off = struct.unpack_from("<I", data, functab_off + (i + 1) * 8)[0]
             found[key] = (text_file_base + entry_off, text_file_base + next_entry_off)
-            if len(found) == len(TARGET_SYMBOLS):
+            if len(found) == len(reverse_map):
                 break
 
     missing = set(TARGET_SYMBOLS) - set(found)
     if missing:
         raise RuntimeError(f"Missing target Go symbols in binary: {sorted(missing)}")
-    cache.setdefault("pclntab", {})[hdr_key] = {k: [v[0], v[1]] for k, v in found.items()}
+    cache.setdefault("pclntab", {})[hdr_key] = {k: ([found[k][0], found[k][1]] if k in found else None) for k in all_keys}
     _save_meta_cache(cache)
     return found
 
@@ -2820,11 +2826,15 @@ def _resolve_thought_grouping_sites(data: bytes | bytearray, funcs: dict[str, tu
         raise RuntimeError("canUpgradeTrailingThoughtToToolGroup no longer opens with its stack check")
 
     fl = funcs["findLastToolGroup"]
-    # `cmp x7, #4; b.ne other; ldr w17, [x6]; "high"; b.ne other; ldr x12, [x12]`: the `high` test before
-    # reading a planner step's thought field. Patched: `b` straight to that `ldr x12, [x12]`.
+    # `cmp x7, #4; b.ne other; ldr wR, [x6]; mov/movk "high"; cmp; b.ne other; ldr xA, [xB]`: the `high`
+    # test before reading a planner step's thought field. Patched: `b` straight to that `ldr xA, [xB]`.
     high = [o for o, w in _words(data, (fl[0], fl[1] - 0x1C))
-            if word(o + 0x1C) == 0xF940018C and (w == 0xF10010FF or branch_target(w, o) == o + 0x1C and w >> 26 == 0x05)]
-    if len(high) != 1 or (word(high[0]) == 0xF10010FF and word(high[0] + 8) != 0xB94000D1):
+            if word(o + 0x1C) & 0xFFFFFC00 == 0xF9400000
+            and word(o + 0x08) & 0xFFFFFFE0 == 0xB94000C0
+            and word(o + 0x0C) & 0xFFFFFFE0 == 0xD28D2D00
+            and word(o + 0x10) & 0xFFFFFFE0 == 0xF2AD0CE0
+            and (w == 0xF10010FF or branch_target(w, o) == o + 0x1C and w >> 26 == 0x05)]
+    if len(high) != 1:
         raise RuntimeError(f"findLastToolGroupAbsIdx: expected one `high` test before the thought check, found {len(high)}")
     # After `bl isThoughtOnlyGroup; tbnz w0, yes`: `ldr x1, [sp, #len]; cmp x1, #6; b.ne no` ("medium").
     # Patched: `b no`.
@@ -2888,20 +2898,30 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
         return any(not lo <= o < hi and (t := branch_target(word(o), o)) is not None and lo < t < hi
                    for o in range(bounds[0], bounds[1], 4))
 
-    # The CoT gate: `cmp w11, #0xb; b.ne full; cbnz x8, full` then the live one-liner (stock), or
-    # `cmp w11, #0xb; b.ne full; b cave` (patched).
+    # The CoT gate: `cmp wR, #0xb; b.ne full; cbnz xS, full` then the live one-liner (stock), or
+    # `cmp wR, #0xb; b.ne full; b cave` (patched). Registers shift across releases (w11/x8 in v1.5.12,
+    # w7/x1 in v1.5.13).
     gates = [o + 8 for o, w in _words(data, (sc[0], sc[1] - 8))
-             if w == 0x71002D7F and word(o + 4) & 0xFF00001F == 0x54000001
-             and (word(o + 8) & 0xFF00001F == 0xB5000008 or word(o + 8) >> 26 == 0x05)]
+             if w & 0xFFFFFC1F == 0x71002C1F and word(o + 4) & 0xFF00001F == 0x54000001
+             and (word(o + 8) & 0xFF000000 == 0xB5000000
+                  and branch_target(word(o + 8), o + 8) == branch_target(word(o + 4), o + 4)
+                  or word(o + 8) >> 26 == 0x05)]
     if len(gates) != 1:
         raise RuntimeError(f"stepContent: expected one live/full CoT gate, found {len(gates)}")
     gate = gates[0]
     full, live = branch_target(word(gate - 4), gate - 4), gate + 4
+    if word(gate) & 0xFF000000 == 0xB5000000:
+        resp_reg = word(gate) & 0x1F
+    else:
+        cave = branch_target(word(gate), gate)
+        if cave is None or word(cave) & 0xFF000000 != 0xB5000000 or branch_target(word(cave), cave) != full:
+            raise RuntimeError("stepContent: patched CoT gate does not target a valid `cbnz xS, full` cave")
+        resp_reg = word(cave) & 0x1F
 
-    # The full branch: `cbz x10; cbnz x8; ...; cmp w12, #1; b.ls bail; cmp w11, #8; b.eq bail;
-    # cmp w11, #0xb; b.ne after_bail` falling through into inline `bail` at `full + 0x34`, then the
-    # `low` test, which loads the verbosity's length: `add x27, ...; ldr x11, [x27, #len]; cmp x11, #3`.
-    if word(full + 0x2C) != 0x71002D7F or word(full + 0x20) & 0xFF00001F != 0x54000009 \
+    # The full branch: `cbz xA; cbnz xS; ...; cmp wT, #1; b.ls bail; cmp wR, #8; b.eq bail;
+    # cmp wR, #0xb; b.ne after_bail` falling through into inline `bail` at `full + 0x34`, then the
+    # `low` test, which loads the verbosity's length: `add x27, ...; ldr xV, [x27, #len]; cmp xV, #3`.
+    if word(full + 0x2C) & 0xFFFFFC1F != 0x71002C1F or word(full + 0x20) & 0xFF00001F != 0x54000009 \
             or word(full + 0x28) & 0xFF00001F != 0x54000000 \
             or word(full + 0x30) & 0xFF00001F != 0x54000001:
         raise RuntimeError("stepContent: the full CoT branch no longer bails out of running steps as expected")
@@ -2912,10 +2932,11 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
     after_bail = branch_target(word(full + 0x30), full + 0x30)
     if after_bail < bail + 0x14:
         raise RuntimeError("stepContent: inline running-step bail-out is too small for Site #53c")
-    if word(after_bail + 0x8) != 0xF1000D7F or word(after_bail + 0x4) & 0xFFC003FF != 0xF940036B:
+    verb_reg = word(after_bail + 0x4) & 0x1F
+    if word(after_bail + 0x4) & 0xFFC003E0 != 0xF9400360 or word(after_bail + 0x8) != (0xF1000C1F | (verb_reg << 5)):
         raise RuntimeError("stepContent: the full CoT branch no longer loads the verbosity")
-    verb_len = (word(after_bail), word(after_bail + 0x4))  # x11 = len(verbosity)
-    is_high = 0xF100117F  # cmp x11, #4
+    verb_len = (word(after_bail), word(after_bail + 0x4))  # xV = len(verbosity)
+    is_high = 0xF100101F | (verb_reg << 5)  # cmp xV, #4
 
     # The collapsed path, where Site #8's `tbz w3, #0` sends an item that is not expanded. Its first 0x64
     # bytes build the header's `Sprintf` arguments; they become the verbosity tests and the new header.
@@ -3016,7 +3037,7 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
                  + encode_adr(v(span + 0x18), v(span + 0x28), 1)                     # adr x1, "∴ "
                  + pack(0xD2800082, 0xAA1F03E0)                                     # mov x2, #4; mov x0, xzr
                  + encode_b(v(span + 0x24), v(hdr_call)) + THOUGHT_MARK)
-    running = pack(cond(span + 0x2C, full, 0xB5000008), *verb_len, is_high,
+    running = pack(cond(span + 0x2C, full, 0xB5000000 | resp_reg), *verb_len, is_high,
                    cond(span + 0x3C, full, 0x54000000)) + encode_b(v(span + 0x40), v(live))
     tokens = pack(is_high, cond(span + 0x48, plain, 0x54000001), *tok_load,
                   cond(span + 0x54, plain, 0xB4000002)) + encode_b(v(span + 0x58), v(tok)) + NOP * 2
@@ -3995,6 +4016,8 @@ def _resolve_neon_gateway_sites(data: bytes | bytearray, funcs: dict[str, tuple[
     pack = lambda *ws: b"".join(struct.pack("<I", w) for w in ws)
     movz = lambda rd, imm: 0xD2800000 | (imm << 5) | rd
 
+    if "Gemini4Neon" in funcs:
+        return ()  # upstream v1.5.13+ registers Gemini 4 Neon natively in defaultmodels.ModelInfos
     cat = funcs["geminiCatalog"]
     det_off = funcs["geminiDetails"][0]
     neon_calls = [
