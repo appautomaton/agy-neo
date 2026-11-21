@@ -31,9 +31,10 @@ trim stock system-prompt bloat, and clean up the terminal UI.
   model, throughput, context usage, cache countdown, active Git worktree, and spend.
 
 **Transcript, thoughts, and running line**
-- Streams thoughts live in the transcript and folds finished thoughts into `∴ Thought for 7s (<title>)`,
-  or grows them in place as a full block under `high` verbosity or `ctrl+o`. Thoughts stay separate
-  from tool groups.
+- Streams thoughts live in the transcript and folds finished thoughts into `∴ Thought for 7s (<title>)`
+  under `/thinking off`, or grows them in place as a full block with token counts under `/thinking on`
+  or `ctrl+o`—orthogonal to `verbosity` (`low` / `medium` / `high`). Thoughts stay separate from tool
+  groups.
 - Marks running tool calls with `⊹` and completed ones with `⋆`, quiets the prompt/tool/thought
   palette, stabilizes streaming code-comment contrast, and updates the prompt bar live when the
   terminal switches between light and dark mode.
@@ -88,7 +89,7 @@ Requires macOS on Apple silicon, Python 3.12+, `jq`, and Xcode Command Line Tool
    Set `CPA_API_KEY` in `~/.gemini/agy-gateway.env`. Plain `agy` uses Google OAuth;
    `agy --settings '{"modelProvider":"gemini"}'` (or `AGY_LOCAL_GATEWAY=on`, or VS Code `--hub`)
    routes through the local gateway via `modelapiccpa`.
-6. Verify with `python3 patch_agy.py --status -v`: `~/.local/bin/agy` reports `patched` (`159`
+6. Verify with `python3 patch_agy.py --status -v`: `~/.local/bin/agy` reports `patched` (`157`
    sites) and `~/.gemini/bin/agy` reports `wrapper`.
 
 ## Upgrading to a new `agy` release

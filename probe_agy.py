@@ -37,6 +37,7 @@ import re
 import select
 import shutil
 import struct
+import concurrent.futures
 import subprocess
 import sys
 import tempfile
@@ -78,30 +79,39 @@ SCENARIO = [
 
 # --- wire -------------------------------------------------------------------------------------
 
-def run_wire(binary: Path, models: list[str]) -> dict[str, str]:
+def _state_subdir(path: Path) -> str:
+    """Compute `--app_data_dir` relative to `~/.gemini` (Go's filepath.Join strips leading `/`)."""
+    return os.path.relpath(path, Path.home() / ".gemini")
+
+
+def run_wire(binary: Path, models: list[str], max_workers: int = 6) -> dict[str, str]:
     """Print, and return by model ID, the request each one sends; a model the binary rejects maps to `FAILED: ...`."""
-    workspace = Path(tempfile.mkdtemp(prefix="agy-wire-"))
+    root = Path(tempfile.mkdtemp(prefix="agy-wire-"))
+
+    def probe_one(idx: int, model: str) -> tuple[str, str]:
+        work = root / f"w{idx}"
+        state = root / f"s{idx}"
+        work.mkdir()
+        try:
+            path, body = capture_prompt.run_scenario_with_path(
+                binary, work, ["--model", model], "say hi", state_subdir=_state_subdir(state),
+            )
+        except RuntimeError as exc:
+            reason = next((line for line in str(exc).splitlines() if line.startswith("error:")), str(exc).splitlines()[-1])
+            return model, f"FAILED: {reason[:160]}"
+        config = body.get("generationConfig", {})
+        return model, f"{path.split('?')[0]:56s} thinkingConfig={json.dumps(config.get('thinkingConfig'))}"
+
     sent: dict[str, str] = {}
     try:
-        for model in models:
-            shutil.rmtree(STATE_DIR, ignore_errors=True)
-            try:
-                capture_prompt.run_scenario(binary, workspace, ["--model", model], "say hi")
-            except RuntimeError as exc:
-                reason = next((line for line in str(exc).splitlines() if line.startswith("error:")), str(exc).splitlines()[-1])
-                sent[model] = f"FAILED: {reason[:160]}"
-                print(f"{model:26s} {sent[model]}")
-                continue
-            path, body = max(
-                ((p, json.loads(b)) for p, b in capture_prompt._Recorder.captured if "GenerateContent" in p),
-                key=lambda r: len(capture_prompt.system_text(r[1])),
-            )
-            config = body.get("generationConfig", {})
-            sent[model] = f"{path.split('?')[0]:56s} thinkingConfig={json.dumps(config.get('thinkingConfig'))}"
-            print(f"{model:26s} {sent[model]}")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, max(1, len(models)))) as pool:
+            futs = [pool.submit(probe_one, idx, m) for idx, m in enumerate(models)]
+            for fut in futs:
+                model, line = fut.result()
+                sent[model] = line
+                print(f"{model:26s} {line}", flush=True)
     finally:
-        shutil.rmtree(STATE_DIR, ignore_errors=True)
-        shutil.rmtree(workspace, ignore_errors=True)
+        shutil.rmtree(root, ignore_errors=True)
     return sent
 
 
@@ -319,19 +329,23 @@ def run_tui(binary: Path, out: Path, settings: dict) -> None:
     out.mkdir(parents=True, exist_ok=True)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Gemini)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    shutil.rmtree(STATE_DIR, ignore_errors=True)
-    workspace = tempfile.mkdtemp(prefix="agy-tui-")
+    root = Path(tempfile.mkdtemp(prefix="agy-tui-"))
+    workspace = root / "work"
+    state_dir = root / "state"
+    workspace.mkdir()
     env = {k: v for k, v in os.environ.items() if not k.startswith(("AGY_", "GEMINI_", "GOOGLE_"))}
     env.update(
         GEMINI_API_KEY="probe", GOOGLE_GEMINI_BASE_URL=f"http://127.0.0.1:{server.server_port}",
         AGY_CLI_DISABLE_AUTO_UPDATE="true", TERM="xterm-256color", COLORTERM="truecolor",
     )
-    argv = [str(binary), f"--app_data_dir={capture_prompt.STATE_SUBDIR}", "--settings", json.dumps(settings)]
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.chdir(workspace)
-        os.execve(argv[0], argv, env)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+    argv = [str(binary), f"--app_data_dir={_state_subdir(state_dir)}", "--settings", json.dumps(settings)]
+    fd, slave_fd = os.openpty()
+    fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+    proc = subprocess.Popen(
+        argv, cwd=workspace, env=env, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+        start_new_session=True, close_fds=True,
+    )
+    os.close(slave_fd)
     screen, raw, decoder = Screen(), bytearray(), codecs.getincrementaldecoder("utf-8")("replace")
 
     def pump(seconds: float) -> None:
@@ -364,16 +378,18 @@ def run_tui(binary: Path, out: Path, settings: dict) -> None:
                 (out / f"{name}.txt").write_text(screen.dump())
     finally:
         for _ in range(2):
-            os.write(fd, b"\x03")
+            try:
+                os.write(fd, b"\x03")
+            except OSError:
+                break
             pump(0.8)
-        try:
-            os.kill(pid, 9)
-        except OSError:
-            pass
-        os.waitpid(pid, 0)
+        proc.kill()
+        proc.wait()
+        os.close(fd)
+        server.shutdown()
+        server.server_close()
         (out / "raw.bin").write_bytes(raw)
-        shutil.rmtree(STATE_DIR, ignore_errors=True)
-        shutil.rmtree(workspace, ignore_errors=True)
+        shutil.rmtree(root, ignore_errors=True)
 
 
 _MASKS = [(re.compile(r"agy-tui-\w+"), "agy-tui-X"), (re.compile(r"\b1\.\d+\.\d+\b"), "N.N.N"), (re.compile(r"\b\d+s\b"), "Ns")]
@@ -516,6 +532,193 @@ def _stock_prompt(backup: Path, version: str, old_backup: Path, old_version: str
     return "READ", f"{what} differ from v{old_version}: diff templates/v{old_version}/stock templates/v{version}/stock"
 
 
+def run_live_probe(binary: Path) -> tuple[bool, str]:
+    """Single-session gateway PTY probe verifying SessionId, native keepalive telemetry, DEC 2031, and `/thinking` orthogonality."""
+    reqs: list[tuple[str, dict]] = []
+    turn_idx = [0]
+
+    class _LiveHandler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_: object) -> None:
+            pass
+
+        def do_POST(self) -> None:
+            body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
+            reqs.append((self.path, body))
+            is_main = "streamGenerateContent" in self.path and len(json.dumps(body)) >= 12000
+            if not is_main:
+                reply = json.dumps({
+                    "candidates": [{"content": {"role": "model", "parts": [{"text": "Title"}]}, "finishReason": "STOP"}],
+                    "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 1, "totalTokenCount": 11},
+                }).encode()
+                payload = b"data: " + reply + b"\n\n" if "streamGenerateContent" in self.path else reply
+                ct = "text/event-stream" if "streamGenerateContent" in self.path else "application/json"
+                self.send_response(200)
+                self.send_header("content-type", ct)
+                self.send_header("content-length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+
+            turn_idx[0] += 1
+            t = turn_idx[0]
+            thought = (
+                "**Checking probe**\n\nHidden while folded."
+                if t == 1
+                else "**Checking expanded**\n\nExpanded body text."
+            )
+            answer = "First answer." if t == 1 else "Second answer."
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.send_header("connection", "close")
+            self.end_headers()
+            chunks = [
+                {"candidates": [{"content": {"role": "model", "parts": [{"thought": True, "text": thought}]}}],
+                 "usageMetadata": {"promptTokenCount": 1200, "candidatesTokenCount": 10, "cachedContentTokenCount": 1000, "totalTokenCount": 1210}},
+                {"candidates": [{"content": {"role": "model", "parts": [{"text": answer}]}, "finishReason": "STOP"}],
+                 "usageMetadata": {"promptTokenCount": 1200, "candidatesTokenCount": 15, "thoughtsTokenCount": 25, "cachedContentTokenCount": 1000, "totalTokenCount": 1240}},
+            ]
+            for i, c in enumerate(chunks):
+                self.wfile.write(b"data: " + json.dumps(c).encode() + b"\n\n")
+                self.wfile.flush()
+                if i == 0:
+                    time.sleep(1.2)
+            self.close_connection = True
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _LiveHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    root = Path(tempfile.mkdtemp(prefix="agy-live-"))
+    work, state = root / "work", root / "state"
+    work.mkdir()
+    sl_log = root / "sl.jsonl"
+    sl_script = root / "sl.sh"
+    sl_script.write_text(f"#!/bin/sh\ncat >> {sl_log}\necho '' >> {sl_log}\necho 'SL_OK'\n")
+    sl_script.chmod(0o755)
+
+    settings = {
+        "modelProvider": "",
+        "model": "gemini-4-hydrogen-high",
+        "contextWindow": "512K",
+        "verbosity": "high",
+        "showThinking": False,
+        "showTips": False,
+        "statusLine": {"type": "command", "command": str(sl_script), "enabled": True},
+    }
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("AGY_", "GEMINI_", "GOOGLE_"))}
+    env.update(
+        TERM="xterm-256color",
+        COLORTERM="truecolor",
+        AGY_CLI_DISABLE_AUTO_UPDATE="true",
+        AGY_LLM_GATEWAY_URL=f"http://127.0.0.1:{server.server_port}",
+        AGY_LLM_GATEWAY_API_KEY="probe",
+        AGY_LLM_GATEWAY_WIRE_PROTOCOL="genai",
+        AGY_LLM_GATEWAY_MODELS="gemini-4-hydrogen-high",
+        AGY_CACHE_MAX_TOUCHES="12",
+    )
+    argv = [str(binary), f"--app_data_dir={_state_subdir(state)}", "--settings", json.dumps(settings)]
+    fd, slave_fd = os.openpty()
+    fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
+    proc = subprocess.Popen(
+        argv, cwd=work, env=env, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+        start_new_session=True, close_fds=True,
+    )
+    os.close(slave_fd)
+    screen, raw, decoder = Screen(), bytearray(), codecs.getincrementaldecoder("utf-8")("replace")
+    bg_reply = [b"\x1b]11;rgb:0000/0000/0000\x1b\\"]
+    osc_count = [0]
+
+    def pump(seconds: float) -> None:
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if not select.select([fd], [], [], 0.05)[0]:
+                continue
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            raw.extend(chunk)
+            if b"\x1b]11;?" in chunk:
+                osc_count[0] += 1
+                os.write(fd, bg_reply[0])
+            if b"\x1b[c" in chunk or b"\x1b[0c" in chunk:
+                os.write(fd, b"\x1b[?62;22c")
+            if b"\x1b[6n" in chunk:
+                os.write(fd, f"\x1b[{screen.row + 1};{min(screen.col, COLS - 1) + 1}R".encode())
+            screen.feed(decoder.decode(chunk))
+
+    try:
+        pump(4.0)
+        for _ in range(4):
+            dump = screen.dump()
+            if any(k in dump for k in ("Do you trust", "Done", "Continue", "Next", "Accept", "Theme")):
+                os.write(fd, b"\r")
+                pump(1.0)
+            else:
+                break
+        # Turn 1: verbosity=high + /thinking off -> folded 1-line summary (no body, no token count)
+        os.write(fd, b"first\r")
+        pump(3.5)
+        turn1_dump = screen.dump()
+
+        # Switch to /thinking on and run Turn 2 -> expanded body + closing header with 25 tokens
+        os.write(fd, b"/thinking on\r")
+        pump(1.0)
+        os.write(fd, b"second\r")
+        pump(3.5)
+        turn2_dump = screen.dump()
+
+        # DEC Mode 2031 live dark -> light switch
+        osc_before = osc_count[0]
+        bg_reply[0] = b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
+        os.write(fd, b"\x1b[?997;2n")
+        pump(1.5)
+        light_dump = screen.dump()
+        osc_after = osc_count[0]
+    finally:
+        for _ in range(2):
+            try:
+                os.write(fd, b"\x03")
+            except OSError:
+                break
+            pump(0.4)
+        proc.kill()
+        proc.wait()
+        os.close(fd)
+        server.shutdown()
+        server.server_close()
+        raw_text = raw.decode("utf-8", errors="replace")
+        sl_lines = [json.loads(l) for l in sl_log.read_text().splitlines() if l.strip()] if sl_log.exists() else []
+        shutil.rmtree(root, ignore_errors=True)
+
+    failures: list[str] = []
+    main_reqs = [b for p, b in reqs if "streamGenerateContent" in p and len(json.dumps(b)) >= 12000]
+    if not main_reqs or not all(b.get("sessionId") for b in main_reqs):
+        failures.append(f"SessionId missing on gateway request(s) ({len(main_reqs)} reqs)")
+    ka_vals = [j["cache_keepalive"] for j in sl_lines if j.get("cache_keepalive")]
+    if not ka_vals:
+        failures.append("StatusLineData.cache_keepalive missing")
+    else:
+        v = ka_vals[-1]
+        ts, touches, left, st = v & 0x3FFFFFFFF, (v >> 34) & 0xFF, (v >> 42) & 0xFF, (v >> 50) & 0x3
+        if not (st == 1 and left == 12 and touches == 0 and ts > 1_700_000_000):
+            failures.append(f"unexpected cache_keepalive=(state={st}, left={left}, touches={touches}, ts={ts})")
+    if not any(j.get("context_window", {}).get("context_window_size") == 512000 for j in sl_lines):
+        failures.append("StatusLineData context_window_size != 512000")
+    if "\x1b[?2031h" not in raw_text or osc_after <= osc_before or "bg=237" not in turn1_dump or "bg=254" not in light_dump:
+        failures.append(f"DEC 2031 switch failed (2031h={'\x1b[?2031h' in raw_text}, osc={osc_before}->{osc_after}, dark237={'bg=237' in turn1_dump}, light254={'bg=254' in light_dump})")
+    if "∴ Thought for" not in turn1_dump or "Checking probe" not in turn1_dump or "Hidden while folded." in turn1_dump or "25 tokens" in turn1_dump:
+        failures.append("high + /thinking off did not fold to 1-line title without token count")
+    if "Expanded body text." not in turn2_dump or "25 tokens" not in turn2_dump:
+        failures.append("high + /thinking on did not expand thought body with token count")
+
+    if failures:
+        return False, "; ".join(failures)
+    return True, "SessionId, keepalive(state=1,left=12), 512K, DEC 2031 (237->254), /thinking off|on orthogonal"
+
+
 def rehearse(stock: Path | None, old: Path | None, workdir: Path | None, no_tui: bool) -> int:
     """Rehearse an upgrade on copies and report, step by step, whether the patch still holds."""
     report: list[tuple[str, str, str]] = []
@@ -623,8 +826,11 @@ def rehearse(stock: Path | None, old: Path | None, workdir: Path | None, no_tui:
     try:
         patch_agy.apply_patch(old_bin)
         settings = {"modelProvider": "gemini", "model": "Gemini 4 Hydrogen (High)", "contextWindow": "512K", "showTips": False}
-        run_tui(old_bin, workdir / "screens-old", settings)
-        run_tui(new_bin, workdir / "screens-new", settings)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f_old = pool.submit(run_tui, old_bin, workdir / "screens-old", settings)
+            f_new = pool.submit(run_tui, new_bin, workdir / "screens-new", settings)
+            f_old.result()
+            f_new.result()
     except OSError as exc:
         step("screens", "skip", f"no pty ({exc}); run outside the sandbox")
         return finish()
@@ -632,6 +838,8 @@ def rehearse(stock: Path | None, old: Path | None, workdir: Path | None, no_tui:
     changed = diff_snapshots(workdir / "screens-old", workdir / "screens-new")
     step("screens", "READ" if changed else "ok",
          f"{changed} screen(s) differ from patched v{old_version} (above): tell upstream's changes from ours" if changed else f"identical to patched v{old_version}")
+    live_ok, live_detail = run_live_probe(new_bin)
+    step("live probe", "ok" if live_ok else "FAIL", live_detail)
     return finish()
 
 
@@ -646,6 +854,8 @@ def main() -> int:
     tui.add_argument("--out", type=Path, help="snapshot directory (default: .cache/probe/v<version>)")
     tui.add_argument("--against", type=Path, help="diff the snapshots against this earlier run")
     tui.add_argument("--settings", type=json.loads, default={}, help="extra settings.json keys, as JSON")
+    live = sub.add_parser("live", help="verify SessionId, keepalive telemetry, DEC 2031, and /thinking orthogonality")
+    live.add_argument("--binary", type=Path, default=DEFAULT_BINARY)
     reh = sub.add_parser("rehearse", help="rehearse an upgrade on copies: fetch, resolve, patch, probe")
     reh.add_argument("--stock", type=Path, help="a clean binary of the new release (default: fetch it if one is newer)")
     reh.add_argument("--old", type=Path, help="the clean binary to compare with (default: the installed version's .orig)")
@@ -658,6 +868,10 @@ def main() -> int:
 
     if args.command == "wire":
         return 1 if any(v.startswith("FAILED") for v in run_wire(args.binary, args.models).values()) else 0
+    if args.command == "live":
+        ok, detail = run_live_probe(args.binary)
+        print(("ok: " if ok else "FAIL: ") + detail)
+        return 0 if ok else 1
     if args.command == "rehearse":
         return rehearse(args.stock, args.old, args.dir, args.no_tui)
     if args.command == "sites":

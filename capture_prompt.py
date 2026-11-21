@@ -49,11 +49,9 @@ RULES_MARK = "[dynamic: your AGENTS.md / rules]"
 
 
 class _Recorder(http.server.BaseHTTPRequestHandler):
-    captured: list[tuple[str, bytes]] = []
-
     def do_POST(self) -> None:
         body = self.rfile.read(int(self.headers.get("content-length", 0)))
-        self.captured.append((self.path, body))
+        self.server.captured.append((self.path, body))  # type: ignore[attr-defined]
         self.send_response(500)
         self.send_header("content-type", "application/json")
         self.end_headers()
@@ -65,10 +63,17 @@ class _Recorder(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def run_scenario(binary: Path, workspace: Path, extra_args: list[str], prompt: str) -> dict:
-    """Run one `agy --print` turn against the recorder and return the main request."""
-    _Recorder.captured = []
+def run_scenario_with_path(
+    binary: Path,
+    workspace: Path,
+    extra_args: list[str],
+    prompt: str,
+    *,
+    state_subdir: str = STATE_SUBDIR,
+) -> tuple[str, dict]:
+    """Run one `agy --print` turn against an isolated loopback recorder and return `(path, main_request)`."""
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Recorder)
+    server.captured = []  # type: ignore[attr-defined]
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("AGY_LLM_GATEWAY_")}
@@ -79,7 +84,7 @@ def run_scenario(binary: Path, workspace: Path, extra_args: list[str], prompt: s
     )
     cmd = [
         str(binary),
-        f"--app_data_dir={STATE_SUBDIR}",
+        f"--app_data_dir={state_subdir}",
         "--settings", json.dumps({"modelProvider": "gemini"}),
         *extra_args,
         "--print", prompt,
@@ -88,12 +93,18 @@ def run_scenario(binary: Path, workspace: Path, extra_args: list[str], prompt: s
         proc = subprocess.run(cmd, cwd=workspace, env=env, capture_output=True, text=True, timeout=120)
     finally:
         server.shutdown()
+        server.server_close()
 
-    requests = [json.loads(body) for path, body in _Recorder.captured if "GenerateContent" in path]
+    requests = [(path, json.loads(body)) for path, body in server.captured if "GenerateContent" in path]  # type: ignore[attr-defined]
     if not requests:
         raise RuntimeError(f"no generation request captured; agy stderr tail:\n{proc.stderr[-1500:]}")
     # Background calls (titles, safety checks) carry short prompts; the agent turn has the largest.
-    return max(requests, key=lambda r: len(system_text(r)))
+    return max(requests, key=lambda r: len(system_text(r[1])))
+
+
+def run_scenario(binary: Path, workspace: Path, extra_args: list[str], prompt: str) -> dict:
+    """Run one `agy --print` turn against the recorder and return the main request."""
+    return run_scenario_with_path(binary, workspace, extra_args, prompt)[1]
 
 
 def system_text(request: dict) -> str:

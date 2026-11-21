@@ -281,33 +281,26 @@
  "render.stepContent -> a collapsed thought keeps its snippet beside an answer": [
   "109e31809051f362"
  ],
- "render.stepContent -> a collapsed thought under `high` expands; else its header is `∴ <header>`": [
-  "5b53efe6f0d81e5d"
- ],
- "render.stepContent -> a running thought asks whether verbosity is `high`": [
-  "ff9d77633ad8e9b8",
-  "447f20fa103d3ae3"
+ "render.stepContent -> a collapsed thought's header is `∴ <header>`": [
+  "73e261ce1ae0a367"
  ],
  "render.stepContent -> a running thought in the full branch: empty header, straight to the body": [
   "e03822a46af53499",
   "c75e29740e32440e"
  ],
- "render.stepContent -> a running thought under `high`: the full block, else the live one-liner": [
-  "d99c6a4d4d7f315e"
- ],
  "render.stepContent -> an expanded running thought uses the headerless full block": [
   "1822be489bb36d69"
+ ],
+ "render.stepContent -> collapsed thoughts leave out the token count; expanded ones keep it": [
+  "56987dfab69979af"
  ],
  "render.stepContent -> mutate CoT header `▾ Thought...` to `∴ Thought...`": [
   "d04e3cf1d7f67001"
  ],
- "render.stepContent -> outside `high`, the CoT header leaves out the token count": [
-  "10cafc2de9cb45b9"
- ],
  "render.stepContent -> the CoT block is body, then its `∴ Thought for` line": [
   "502fe14213700ba3"
  ],
- "render.stepContent -> the CoT header asks whether verbosity is `high` before its token count": [
+ "render.stepContent -> the CoT header asks whether the thought is expanded before its token count": [
   "b15032230242ce1b"
  ],
  "render.stepContent -> the collapsed header's `Sprintf` becomes `concatstring2`": [

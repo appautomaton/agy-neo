@@ -1196,11 +1196,15 @@ def _resolve_palette_and_typography_sites(
     s20_va = VM_BASE + s20_off
 
     # 21. render.resolveStyles -> Styles[+0x0000] (UserPrompt) Regular weight + adaptive 256-color background
+    # Store the mutable 1-byte ANSI color index in the cap MSB (`+23`) of Halloween's dead 14-row logo
+    # slice header in `__DATA,__data`: non-pointer in `gcdatamask`, zero DYLD rebases, guaranteed 0 at
+    # startup, and unreachable after `halloween.init` because Site #49d unregisters Halloween.
     lc_start, _ = funcs["lipglossColor"]
     itab_va = decode_adrp_add(data, lc_start + 0xD0)
     ext_color_type_va = struct.unpack_from("<Q", data, itab_va - VM_BASE + 8)[0]
-    zerobase_va = decode_adrp_add(data, lc_start + 0x150)
-    bg_byte_va = zerobase_va - 8
+    bg_byte_va = _halloween_logo_slices(data, funcs)[0][2] + 23
+    if data[bg_byte_va - VM_BASE] != 0:
+        raise RuntimeError(f"bar-color slot {hex(bg_byte_va)} is not zero-initialized in __DATA,__data")
     bg_byte_imm12 = bg_byte_va & 0xFFF
 
     s21_hits = [
@@ -1402,8 +1406,8 @@ def _resolve_palette_and_typography_sites(
         + bytes.fromhex("1f2003d5")
         + s34_orig[12:28]
         + bytes.fromhex("e5df4039bf040071a51d8052c61f8052a500861a")
+        + encode_adrp(s34_va + 48, bg_byte_va, 27)
         + strb_w5_x27
-        + bytes.fromhex("1f2003d5")
         + s34_orig[56:80]
         + encode_bl(s34_va + 80, rerender_va)
     )
@@ -1882,6 +1886,21 @@ def _gemini_fill(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> 
     return paint_start, blob, at
 
 
+def _halloween_logo_slices(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> list[tuple[int, int, int]]:
+    """Return Halloween's two adjacent 14-row logo `[]string` slices as `[(ptr_va, len, hdr_va), ...]`."""
+    rows: list[tuple[int, int, int]] = []
+    seen_ptrs: set[int] = set()
+    for _, va in _slice_loads(data, funcs["halloweenInit"]):
+        ptr, n, cap = struct.unpack_from("<QQQ", data, va - VM_BASE)
+        if n == cap == 14 and VM_BASE < ptr < VM_BASE + len(data) and ptr not in seen_ptrs:
+            seen_ptrs.add(ptr)
+            rows.append((ptr, n, va))
+    rows.sort()
+    if len(rows) != 2 or rows[0][0] + 16 * rows[0][1] != rows[1][0]:
+        raise RuntimeError(f"halloween.init: expected two adjacent 14-row logo tables, found {rows}")
+    return rows
+
+
 def _resolve_spinner_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
     """Sites #49a-#49i: the breathing star, the Gemini band over a blue word, one space after the frame."""
     word = lambda o: struct.unpack_from("<I", data, o)[0]
@@ -1909,14 +1928,7 @@ def _resolve_spinner_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
     theme_itab, theme_value, reg_call = _adrp_add_at(data, reg[0], 0), _adrp_add_at(data, reg[0] + 8, 1), reg[0] + 16
 
     # Halloween's logo rows: halloween.init copies two 14-row []string tables that lie end to end.
-    rows = []
-    for _, va in _slice_loads(data, funcs["halloweenInit"]):
-        ptr, n, cap = slice_at(va)
-        if n == cap == 14 and VM_BASE < ptr < VM_BASE + len(data) and (ptr, n) not in rows:
-            rows.append((ptr, n))
-    rows.sort()
-    if len(rows) != 2 or rows[0][0] + 16 * rows[0][1] != rows[1][0]:
-        raise RuntimeError(f"halloween.init: expected two adjacent 14-row logo tables, found {rows}")
+    rows = _halloween_logo_slices(data, funcs)
     table_va = rows[0][0]
     if len(SPINNER_BREATH) > rows[0][1] + rows[1][1]:
         raise RuntimeError("Halloween's logo tables hold fewer slots than the breath has frames")
@@ -1940,14 +1952,16 @@ def _resolve_spinner_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
          read(table_va, len(table)), table)
 
     # 49c. The frame slice: (ptr, len, cap) of the 8 braille frames -> the 24.
-    stock_run = _find_all(data, SPINNER_STOCK)
+    ro_bounds = _section_file_bounds(data, "__TEXT", "__rodata")
+    data_bounds = _section_file_bounds(data, "__DATA", "__data")
+    stock_run = _find_all(data, SPINNER_STOCK, ro_bounds)
     if len(stock_run) != 1:
         raise RuntimeError(f"Expected one braille spinner run, found {len(stock_run)}")
-    stock_arr = _find_all(data, b"".join(struct.pack("<QQ", VM_BASE + stock_run[0] + 4 * i, 4) for i in range(8)))
+    stock_arr = _find_all(data, b"".join(struct.pack("<QQ", VM_BASE + stock_run[0] + 4 * i, 4) for i in range(8)), data_bounds)
     if len(stock_arr) != 1:
         raise RuntimeError(f"Expected one braille frame table, found {len(stock_arr)}")
     stock_hdr, our_hdr = struct.pack("<QQQ", VM_BASE + stock_arr[0], 8, 8), struct.pack("<QQQ", table_va, len(frames), len(frames))
-    hdrs = _find_all(data, stock_hdr) + _find_all(data, our_hdr)
+    hdrs = _find_all(data, stock_hdr, data_bounds) + _find_all(data, our_hdr, data_bounds)
     if len(hdrs) != 1:
         raise RuntimeError(f"Expected one spinner frame slice, found {len(hdrs)}")
     site("spinner frame slice -> 24 frames of the breathing star", hdrs[0], stock_hdr, our_hdr)
@@ -2140,9 +2154,10 @@ def _resolve_spinner_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
     if (branch_target(word(c + 4), c + 4) != join or branch_target(word(call3), call3) != funcs["concatstring3"][0]
             or word(c + 16) >> 26 != 0x05 or (word(join) != 0xAA0103E2 and word(join) >> 26 != 0x05)):
         raise RuntimeError("pendingLineView's tail no longer joins decoration, newline and line")
-    nn = next((o for o in _find_all(data, b"\n\n") if o >= _text_section(data)[1]), None)
-    if nn is None or nn >= _text_tail_cave(data)[0]:
+    nn_pos = data.find(b"\n\n", ro_bounds[0], ro_bounds[1])
+    if nn_pos == -1 or nn_pos >= _text_tail_cave(data)[0]:
         raise RuntimeError("no blank line in __TEXT's data to open the pending block with")
+    nn = nn_pos
     leaf = _gap_leaf_base(data)
     cbnz = lambda pc, target, rt: struct.pack("<I", 0xB5000000 | (((target - pc) // 4) & 0x7FFFF) << 5 | rt)
     code = (pack(0xAA0103E2, 0xAA0003E1)                                   # mov x2, x1; mov x1, x0
@@ -2486,10 +2501,11 @@ def _resolve_elapsed_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
     # 50a. pendingLineView: `concatstring2(nil, text, "...")` (`adrp x3; add x3; orr x4, xzr, #3`). The three
     # dots become one ellipsis, three bytes too, from a `…` already in the binary.
     ell = ELLIPSIS.encode()
-    in_text = [o for o in _find_all(data, ell) if o < _text_tail_cave(data)[0]]
-    if not in_text:
+    ro_lo, ro_hi = _section_file_bounds(data, "__TEXT", "__rodata")
+    ell_pos = data.find(ell, ro_lo, ro_hi)
+    if ell_pos == -1 or ell_pos >= _text_tail_cave(data)[0]:
         raise RuntimeError("no `…` in __TEXT to point the pending line's ellipsis at")
-    ell_va = VM_BASE + in_text[0]
+    ell_va = VM_BASE + ell_pos
     dots = [
         o for o, w in _words(data, (pv[0], pv[1] - 12))
         if w & 0x9F00001F == 0x90000003 and bytes(data[decode_adrp_add(data, o) - VM_BASE :][:3]) in (b"...", ell)
@@ -2872,14 +2888,15 @@ CODE_COMMENT_GRAY = (b'<entry type="Comment" style="italic #999999"/>', b'<entry
 
 def _resolve_code_theme_sites(data: bytes | bytearray) -> tuple[PatchSite, ...]:
     """Site #58: the `native` code style's comment gray, off the 246/247 tie."""
-    start = data.find(b'<style name="native">')
-    end = data.find(b"</style>", start)
+    ro_lo, ro_hi = _section_file_bounds(data, "__TEXT", "__rodata")
+    start = data.find(b'<style name="native">', ro_lo, ro_hi)
+    end = data.find(b"</style>", start, ro_hi) if start >= 0 else -1
     if start < 0 or end < 0:
         raise RuntimeError("chroma's `native` style is no longer embedded")
-    hits = [o for needle in CODE_COMMENT_GRAY for o in _find_all(data[start:end], needle)]
+    hits = [o for needle in CODE_COMMENT_GRAY for o in _find_all(data, needle, (start, end))]
     if len(hits) != 1:
         raise RuntimeError(f"`native` style: expected one comment entry at #999999, found {len(hits)}")
-    off = start + hits[0]
+    off = hits[0]
     stock, patched = CODE_COMMENT_GRAY
     return (PatchSite("code-theme", "chroma `native` style -> comments #979797, nearest 246 alone (no 246/247 coin flip)",
                       VM_BASE + off, off, _recoverable(data, off, patched, stock if bytes(data[off:off + len(stock)]) == stock else patched),
@@ -3019,7 +3036,7 @@ def _resolve_thought_grouping_sites(data: bytes | bytearray, funcs: dict[str, tu
 # ` (<first line>)`, fitted to the width minus the header, instead of the last paragraph. "Is verbosity
 # `high`" is a length test: the setting is one of `low`, `medium`, `high`.
 def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
-    """Sites #53a-#53e & #54a-#54i: the running thought grows under `high` (or when expanded); elsewhere a finished thought is one line."""
+    """Sites #53c-#53e & #54a-#54i: orthogonal `/thinking` × `verbosity` — expanded thoughts (`/thinking on` or `ctrl+o`) grow in place with closing `∴ Thought for Ns, M tokens`; collapsed thoughts (`/thinking off`) stream as a 1-line summary and fold to `∴ Thought for Ns (<title>)`."""
     word = lambda o: struct.unpack_from("<I", data, o)[0]
     pack = lambda *ws: b"".join(struct.pack("<I", w) for w in ws)
     calls = lambda o, sym: word(o) >> 26 == 0x25 and branch_target(word(o), o) == funcs[sym][0]
@@ -3032,13 +3049,18 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
     def cond(at: int, target: int, base: int) -> int:
         return base | ((((target - at) // 4) & 0x7FFFF) << 5)
 
+    def tbz(at: int, target: int, rt: int, bit: int = 0) -> int:
+        disp = (target - at) // 4
+        if not -0x2000 <= disp < 0x2000:
+            raise RuntimeError(f"tbz target {hex(VM_BASE + target)} out of range from {hex(VM_BASE + at)}")
+        return 0x36000000 | ((bit >> 5) << 31) | ((bit & 0x1F) << 19) | ((disp & 0x3FFF) << 5) | (rt & 0x1F)
+
     def entered_from_outside(lo: int, hi: int, bounds: tuple[int, int]) -> bool:
         return any(not lo <= o < hi and (t := branch_target(word(o), o)) is not None and lo < t < hi
                    for o in range(bounds[0], bounds[1], 4))
 
-    # The CoT gate: `cmp wR, #0xb; b.ne full; cbnz xS, full` then the live one-liner (stock), or
-    # `cmp wR, #0xb; b.ne full; b cave` (patched). Registers shift across releases (w11/x8 in v1.5.12,
-    # w7/x1 in v1.5.13).
+    # The CoT gate: `cmp wR, #0xb; b.ne full; cbnz xS, full` then the live one-liner (stock; also accept
+    # an unconditional `b` from older patched binaries so `--status` reports cleanly without crashing).
     gates = [o + 8 for o, w in _words(data, (sc[0], sc[1] - 8))
              if w & 0xFFFFFC1F == 0x71002C1F and word(o + 4) & 0xFF00001F == 0x54000001
              and (word(o + 8) & 0xFF000000 == 0xB5000000
@@ -3048,17 +3070,9 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
         raise RuntimeError(f"stepContent: expected one live/full CoT gate, found {len(gates)}")
     gate = gates[0]
     full, live = branch_target(word(gate - 4), gate - 4), gate + 4
-    if word(gate) & 0xFF000000 == 0xB5000000:
-        resp_reg = word(gate) & 0x1F
-    else:
-        cave = branch_target(word(gate), gate)
-        if cave is None or word(cave) & 0xFF000000 != 0xB5000000 or branch_target(word(cave), cave) != full:
-            raise RuntimeError("stepContent: patched CoT gate does not target a valid `cbnz xS, full` cave")
-        resp_reg = word(cave) & 0x1F
 
     # The full branch: `cbz xA; cbnz xS; ...; cmp wT, #1; b.ls bail; cmp wR, #8; b.eq bail;
-    # cmp wR, #0xb; b.ne after_bail` falling through into inline `bail` at `full + 0x34`, then the
-    # `low` test, which loads the verbosity's length: `add x27, ...; ldr xV, [x27, #len]; cmp xV, #3`.
+    # cmp wR, #0xb; b.ne after_bail` falling through into inline `bail` at `full + 0x34`.
     if word(full + 0x2C) & 0xFFFFFC1F != 0x71002C1F or word(full + 0x20) & 0xFF00001F != 0x54000009 \
             or word(full + 0x28) & 0xFF00001F != 0x54000000 \
             or word(full + 0x30) & 0xFF00001F != 0x54000001:
@@ -3070,23 +3084,19 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
     after_bail = branch_target(word(full + 0x30), full + 0x30)
     if after_bail < bail + 0x14:
         raise RuntimeError("stepContent: inline running-step bail-out is too small for Site #53c")
-    verb_reg = word(after_bail + 0x4) & 0x1F
-    if word(after_bail + 0x4) & 0xFFC003E0 != 0xF9400360 or word(after_bail + 0x8) != (0xF1000C1F | (verb_reg << 5)):
-        raise RuntimeError("stepContent: the full CoT branch no longer loads the verbosity")
-    verb_len = (word(after_bail), word(after_bail + 0x4))  # xV = len(verbosity)
-    is_high = 0xF100101F | (verb_reg << 5)  # cmp xV, #4
 
     # The collapsed path, where Site #8's `tbz w3, #0` sends an item that is not expanded. Its first 0x64
-    # bytes build the header's `Sprintf` arguments; they become the verbosity tests and the new header.
+    # bytes build the header's `Sprintf` arguments; they now hold the `∴ ` header (#54a) and expanded-gated
+    # token count test (#54d).
     s8 = find_unique_anchor(data, sc, bytes.fromhex("e20300aa04000014e10f40b2"), "Site 8 (stepContent expanded CoT check)") + 0x10
     if word(s8) & 0xFFF8001F != 0x36000003:
         raise RuntimeError("stepContent: the expanded test is no longer `tbz w3, #0` (an old patch with Site #8?)")
-    span, expanded = branch_target(word(s8), s8), s8 + 4
+    span = branch_target(word(s8), s8)
 
     # The live branch also tests `expanded` (`add x27, sp, ...; ldrb wR, [x27, #exp]; tbz wR, #0, one_liner`)
-    # to show a `"▾ Thinking  (Ns)\n" + thoughtBodyRows` block on `ctrl+o`. Redirecting that expanded
-    # fall-through to `bail` (#53c) gives `ctrl+o` the same headerless growing block that `high` renders,
-    # closing in place with the `∴ Thought for ...` line (#53d).
+    # to show a `"▾ Thinking  (Ns)\n" + thoughtBodyRows` block when `/thinking on` or `ctrl+o` is active.
+    # Redirecting that expanded fall-through to `bail` (#53c) gives expanded running thoughts our headerless
+    # growing block, closing in place with the `∴ Thought for ...` line (#53d).
     if word(s8 - 8) & 0xFF8003FF != 0x910003FB or word(s8 - 4) & 0xFFC003E0 != 0x39400360:
         raise RuntimeError("stepContent: the expanded flag is no longer loaded via `add x27, sp, ...; ldrb wR, [x27, ...]`")
     exp_hi, exp_ld = word(s8 - 8), word(s8 - 4) & ~0x1F
@@ -3155,46 +3165,45 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
         raise RuntimeError("stepContent: the collapsed CoT snippet is no longer skipped beside an answer")
 
     # The token count: `fmtDuration` twice in the header code, first for `Thought for %s, %s tokens` and
-    # then for `Thought for %s`, each after `mov x0, x1`; before the first, `add x27, sp, #0x8, lsl #12;
-    # ldr x2, [x27, #tokens]; cbz x2, plain` (stock) or `add x27; ldr x11, [x27, #len]; b cave` (patched).
+    # then for `Thought for %s`, each after `mov x0, x1`; before the first, `add x27, sp, #hi, lsl #12;
+    # ldr x2, [x27, #tokens]; cbz x2, plain` (stock) or `add x27; ldrb w2, [x27, #exp]; b cave` (patched).
     durs = _calls_to(data, (full, span), funcs["fmtDuration"][0])
     if len(durs) != 2 or word(durs[0] - 4) != 0xAA0103E0 or word(durs[1] - 4) != 0xAA0103E0:
         raise RuntimeError("stepContent: the CoT header no longer formats its duration in two places")
     tok, plain, tok_at = durs[0] - 4, durs[1] - 4, durs[0] - 0x10
+    exp_load = (exp_hi, exp_ld | 2)
     if word(tok_at + 8) & 0xFF00001F == 0xB4000002 and branch_target(word(tok_at + 8), tok_at + 8) == plain:
         tok_load = (word(tok_at), word(tok_at + 4))
-    elif (word(tok_at), word(tok_at + 4)) == verb_len and branch_target(word(tok_at + 8), tok_at + 8) == span + 0x44:
+    elif (word(tok_at), word(tok_at + 4)) == exp_load and branch_target(word(tok_at + 8), tok_at + 8) == span + 0x20:
+        tok_load = (word(span + 0x24), word(span + 0x28))
+    elif branch_target(word(tok_at + 8), tok_at + 8) == span + 0x44:  # pre-decouple patched binary (`--status`)
         tok_load = (word(span + 0x4C), word(span + 0x50))
     else:
         raise RuntimeError("stepContent: the CoT header no longer tests its token count")
 
-    # The span: [0x00] collapsed path (#54a), [0x2c] running thought (#53b), [0x44] token count (#54d).
+    # The span: [0x00..0x20) collapsed header (#54a), [0x20..0x34) expanded-gated token count (#54d).
     v = lambda o: VM_BASE + o
-    collapsed = (pack(*verb_len, is_high, cond(span + 0x0C, expanded, 0x54000000),  # high: b.eq expanded
-                      0xAA0203E3, 0xAA0103E4)                                       # mov x3, x2; mov x4, x1
-                 + encode_adr(v(span + 0x18), v(span + 0x28), 1)                     # adr x1, "∴ "
+    collapsed = (pack(0xAA0203E3, 0xAA0103E4)                                       # mov x3, x2; mov x4, x1
+                 + encode_adr(v(span + 0x08), v(span + 0x18), 1)                     # adr x1, "∴ "
                  + pack(0xD2800082, 0xAA1F03E0)                                     # mov x2, #4; mov x0, xzr
-                 + encode_b(v(span + 0x24), v(hdr_call)) + THOUGHT_MARK)
-    running = pack(cond(span + 0x2C, full, 0xB5000000 | resp_reg), *verb_len, is_high,
-                   cond(span + 0x3C, full, 0x54000000)) + encode_b(v(span + 0x40), v(live))
-    tokens = pack(is_high, cond(span + 0x48, plain, 0x54000001), *tok_load,
-                  cond(span + 0x54, plain, 0xB4000002)) + encode_b(v(span + 0x58), v(tok)) + NOP * 2
-    assert (len(collapsed), len(running), len(tokens)) == (0x2C, 0x18, 0x20)
+                 + encode_b(v(span + 0x14), v(hdr_call)) + THOUGHT_MARK + NOP)
+    tokens = (pack(tbz(span + 0x20, plain, 2), *tok_load,                            # tbz w2, #0, plain; ldr x2, tokens
+                   cond(span + 0x2C, plain, 0xB4000002))                             # cbz x2, plain
+              + encode_b(v(span + 0x30), v(tok)))
+    assert (len(collapsed), len(tokens)) == (0x20, 0x14)
 
-    site("render.stepContent -> a running thought asks whether verbosity is `high`", gate, encode_b(v(gate), v(span + 0x2C)))
-    site("render.stepContent -> a running thought under `high`: the full block, else the live one-liner", span + 0x2C, running)
     site("render.stepContent -> a running thought in the full branch: empty header, straight to the body", bail,
          pack(word(j + 0x24), st_ptr | 31, word(j + 0x04), st_len | 31) + encode_b(v(bail + 16), v(body)))
     site("render.stepContent -> the CoT block is body, then its `∴ Thought for` line", j + 0x08,
          pack(hlen, word(j + 0x0C), word(j + 0x10), word(j + 0x14), 0xAA0103E2, 0xAA0003E1, word(j + 0x20), word(j + 0x24), hptr))
     site("render.stepContent -> an expanded running thought uses the headerless full block", live_exp,
          encode_b(v(live_exp), v(bail)))
-    site("render.stepContent -> a collapsed thought under `high` expands; else its header is `∴ <header>`", span, collapsed)
+    site("render.stepContent -> a collapsed thought's header is `∴ <header>`", span, collapsed)
     site("render.stepContent -> the collapsed header's `Sprintf` becomes `concatstring2`", hdr_call,
          encode_bl(v(hdr_call), VM_BASE + funcs["concatstring2"][0]))
-    site("render.stepContent -> the CoT header asks whether verbosity is `high` before its token count", tok_at,
-         pack(*verb_len) + encode_b(v(tok_at + 8), v(span + 0x44)))
-    site("render.stepContent -> outside `high`, the CoT header leaves out the token count", span + 0x44, tokens)
+    site("render.stepContent -> the CoT header asks whether the thought is expanded before its token count", tok_at,
+         pack(*exp_load) + encode_b(v(tok_at + 8), v(span + 0x20)))
+    site("render.stepContent -> collapsed thoughts leave out the token count; expanded ones keep it", span + 0x20, tokens)
     site("render.stepContent -> the collapsed snippet loses its two-space indent", c + 0x10, pack(0xAA1F03E2))
     site("render.stepContent -> the collapsed snippet joins its header on one line", c + 0x8C, pack(0xAA1F03E4))
     site("render.stepContent -> a collapsed thought keeps its snippet beside an answer", has_answer,
@@ -3234,9 +3243,10 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
 def _resolve_monitor_sites(data: bytes | bytearray) -> tuple[PatchSite, ...]:
     """Disable synchronous pre-tool LLM monitors (`agy_tool_safety`, `sir_flash_lite`, `severe_internal_risks_agy`)."""
     header = b"# proto-file: gdm/security/agi_control/agent_monitoring/monitors/monitor_config.proto"
-    start = find_unique_anchor(data, (0, len(data)), header, "MonitorsConfig header")
-    end = data.find(b"\x00", start)
-    bounds = (start, end if end != -1 else len(data))
+    noptr_bounds = _section_file_bounds(data, "__DATA", "__noptrdata")
+    start = find_unique_anchor(data, noptr_bounds, header, "MonitorsConfig header")
+    end = data.find(b"\x00", start, noptr_bounds[1])
+    bounds = (start, end if end != -1 else noptr_bounds[1])
     return tuple(
         PatchSite(
             domain="tool-monitors",
@@ -3278,14 +3288,32 @@ FOCUS_MODE, COLOR_SCHEME_MODE = b"1004", b"2031"
 NOP = bytes.fromhex("1f2003d5")
 
 
+def _section_file_bounds(data: bytes | bytearray, segname: str, sectname: str) -> tuple[int, int]:
+    """File offsets `[start, end)` of Mach-O section `(segname, sectname)` (non-zerofill)."""
+    want_seg, want_sec = segname.encode("ascii"), sectname.encode("ascii")
+    pos = 32
+    for _ in range(struct.unpack_from("<I", data, 16)[0]):
+        cmd, cmdsize = struct.unpack_from("<II", data, pos)
+        if cmd == LC_SEGMENT_64 and bytes(data[pos + 8 : pos + 24]).rstrip(b"\x00") == want_seg:
+            for i in range(struct.unpack_from("<I", data, pos + 64)[0]):
+                sp = pos + 72 + i * 80
+                if bytes(data[sp : sp + 16]).rstrip(b"\x00") == want_sec:
+                    _, size, off = struct.unpack_from("<QQI", data, sp + 32)
+                    if off > 0 and size > 0:
+                        return off, off + size
+        pos += cmdsize
+    raise RuntimeError(f"Mach-O section ({segname}, {sectname}) not found")
+
+
 def go_type_descriptor(data: bytes | bytearray, name: str, types_base: int) -> int:
     """Return the file offset of the zero-size struct type whose abi.Type.Str names `name`."""
+    go_type = _section_file_bounds(data, "__DATA_CONST", "__go_type")
     raw = name.encode()
-    records = [i - 2 for i in _find_all(data, raw) if data[i - 1] == len(raw)]
+    records = [i - 2 for i in _find_all(data, raw, go_type) if data[i - 1] == len(raw)]
     found = []
     for rec in records:
         name_off = struct.pack("<i", rec - types_base)
-        for i in _find_all(data, name_off):
+        for i in _find_all(data, name_off, go_type):
             desc = i - 40
             if desc % 8 == 0 and struct.unpack_from("<Q", data, desc)[0] == 0 and data[desc + 23] & 0x1F == 25:
                 found.append(desc)
@@ -3294,11 +3322,12 @@ def go_type_descriptor(data: bytes | bytearray, name: str, types_base: int) -> i
     return found[0]
 
 
-def _find_all(data: bytes | bytearray, needle: bytes) -> list[int]:
-    hits, i = [], data.find(needle)
+def _find_all(data: bytes | bytearray, needle: bytes, bounds: tuple[int, int] | None = None) -> list[int]:
+    lo, hi = bounds if bounds is not None else (0, len(data))
+    hits, i = [], data.find(needle, lo, hi)
     while i != -1:
         hits.append(i)
-        i = data.find(needle, i + 1)
+        i = data.find(needle, i + 1, hi)
     return hits
 
 
@@ -3393,8 +3422,9 @@ def _resolve_color_scheme_sites(
         raise RuntimeError("tea.RequestBackgroundColor no longer returns (x0 = type, x1 = &zerobase)")
     bg_msg_va, zerobase_va = decode_adrp_add(data, rbc), decode_adrp_add(data, rbc + 8)
     # Go names types relative to moduledata.types; recover that base from the known descriptor.
+    go_type = _section_file_bounds(data, "__DATA_CONST", "__go_type")
     bg_name = b"*tea.backgroundColorMsg"
-    bg_rec = [i - 2 for i in _find_all(data, bg_name) if data[i - 1] == len(bg_name)]
+    bg_rec = [i - 2 for i in _find_all(data, bg_name, go_type) if data[i - 1] == len(bg_name)]
     if len(bg_rec) != 1:
         raise RuntimeError("tea.backgroundColorMsg type name not found")
     types_base = bg_rec[0] - struct.unpack_from("<i", data, bg_msg_va - VM_BASE + 40)[0]
@@ -3492,10 +3522,11 @@ def _read_abi_name(data: bytes | bytearray, off: int) -> tuple[int, str, str]:
 
 def _go_types_base(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> int:
     """Recover `moduledata.types` file offset from `tea.RequestBackgroundColor`."""
+    go_type = _section_file_bounds(data, "__DATA_CONST", "__go_type")
     rbc = funcs["RequestBackgroundColor"][0]
     bg_msg_va = decode_adrp_add(data, rbc)
     bg_name = b"*tea.backgroundColorMsg"
-    bg_rec = [i - 2 for i in _find_all(data, bg_name) if data[i - 1] == len(bg_name)]
+    bg_rec = [i - 2 for i in _find_all(data, bg_name, go_type) if data[i - 1] == len(bg_name)]
     if len(bg_rec) != 1:
         raise RuntimeError("tea.backgroundColorMsg type name not found")
     return bg_rec[0] - struct.unpack_from("<i", data, bg_msg_va - VM_BASE + 40)[0]
@@ -3508,13 +3539,14 @@ def _go_struct_type(
 
     Returns `(desc_off, size, ptrbytes, [(slot_off, field_name, fn_va, ft_va, byte_off), ...])`.
     """
+    go_type = _section_file_bounds(data, "__DATA_CONST", "__go_type")
     raw = star_name.encode("utf-8")
     matches = []
-    for i in _find_all(data, raw):
+    for i in _find_all(data, raw, go_type):
         if data[i - 1] == len(raw):
             rec = i - 2
             noff = struct.pack("<i", rec - types_base)
-            for p in _find_all(data, noff):
+            for p in _find_all(data, noff, go_type):
                 desc = p - 40
                 if desc >= types_base and desc % 8 == 0:
                     sz, ptrb, _, tflag, _, _, kind = struct.unpack_from("<QQIBBBB", data, desc)
@@ -3761,9 +3793,10 @@ def _resolve_keepalive_sites(
             f"ptrbytes={hex(sl_ptrb)} size={hex(sl_size)}"
         )
     orig_internal_type_va = VM_BASE + go_type_descriptor(data, "*types.statusLineDataInternal", types_base)
+    go_type = _section_file_bounds(data, "__DATA_CONST", "__go_type")
     internal_nm = b"statusLineDataInternal"
     internal_recs = [
-        VM_BASE + i - 2 for i in _find_all(data, internal_nm)
+        VM_BASE + i - 2 for i in _find_all(data, internal_nm, go_type)
         if data[i - 1] == len(internal_nm) and data[i - 2] == 0x08
     ]
     if len(internal_recs) != 1:
