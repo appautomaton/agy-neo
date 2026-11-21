@@ -11,26 +11,11 @@
  "codeassistclient.(*CodeAssistClient).StreamGenerateContentFromGateway -> preserve GenerateContentRequest.SessionId on gateway requests": [
   "e9e3926da1f8c28b"
  ],
+ "codeassistclient.(*CodeAssistClient).buildGatewayHTTPRequest -> preserve GenerateContentRequest.SessionId on gateway requests": [
+  "e9e3926da1f8c28b"
+ ],
  "config.applyFeatureProviderCheckpointOverrideConfig -> zero expCp.MaxTokenLimit": [
   "8db83f9833aba2f0"
- ],
- "defaultmodels.Gemini36Flash -> build Gemini 4 Neon (Low..XHigh) ModelInfo": [
-  "de8732d10981d242"
- ],
- "defaultmodels.init -> register gemini-4-neon-high in ModelInfos": [
-  "2358cb7f3f54558c"
- ],
- "defaultmodels.init -> register gemini-4-neon-low in ModelInfos": [
-  "beb0feeeca19f72f"
- ],
- "defaultmodels.init -> register gemini-4-neon-medium in ModelInfos": [
-  "c64fe9782fe4bba1"
- ],
- "defaultmodels.init -> register gemini-4-neon-xhigh in ModelInfos": [
-  "886b4173831c26f7"
- ],
- "geminimodels.Catalog -> skip retired 3.6 Flash / 3.7 Flash Low donor entries": [
-  "a3d4c2c5654723fe"
  ],
  "halloween.init -> reserve __noptrbss uint64 (packed telemetry)": [
   "c9ecc984c52e940d"
@@ -41,11 +26,19 @@
  "halloween.init.0 -> Halloween is not registered (its logo rows hold the spinner frames)": [
   "c9ecc984c52e940d"
  ],
+ "halloween.paint -> elapsedSuffix's effort tables and state formats": [
+  "6a494d4b967bcd33"
+ ],
+ "halloween.paint -> the breathing star's frames, the Gemini band, the long-turn colors, the pending line's verbs, and the tool marks": [
+  "28119556bb8e78ec"
+ ],
  "model.(*ConversationModel).activityCandidate -> Compacting shows its plain label": [
-  "4cd5395fbe37963a"
+  "4cd5395fbe37963a",
+  "e9207131d4420ac2"
  ],
  "model.(*ConversationModel).activityCandidate -> Thinking shows its label, not the thought": [
-  "e9207131d4420ac2"
+  "e9207131d4420ac2",
+  "4cd5395fbe37963a"
  ],
  "model.(*ConversationModel).activityCandidate -> generating, thinking, running: one of 24 verbs per turn": [
   "224bff34dd3c4529"
@@ -58,9 +51,6 @@
  ],
  "model.(*ConversationModel).pendingLineView -> a non-empty line takes the decoration's join too": [
   "35af6daa88f94491"
- ],
- "model.(*ConversationModel).pendingLineView -> a tip hides the status, not the elapsed time": [
-  "0f6ffea9887556d0"
  ],
  "model.(*ConversationModel).pendingLineView -> lay out text, suffix, status even with no status": [
   "ae4fb47c7ec66802"
@@ -110,7 +100,8 @@
   "9229990291334ba4"
  ],
  "model.SelectorModel.offersContextWindow -> admit Gemini 4 *": [
-  "41c0847c9e19ecd8"
+  "41c0847c9e19ecd8",
+  "6a5620591f2c3e7c"
  ],
  "model.SelectorModel.offersContextWindow -> return true": [
   "11b1de4386a362bb"
@@ -155,13 +146,17 @@
   "87b3e811b03d5ed7"
  ],
  "modelapiccpa.trimLastBlock -> keepalive telemetry helpers and CacheKeepalive abi.Name": [
-  "55d019ab133d8f8b"
+  "55d019ab133d8f8b",
+  "af58226f8191d040"
  ],
  "render.RenderBackgroundCommandOutput @+0x20 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.RenderBackgroundCommandOutput @+0x80 -> `⋆`": [
   "00301e07eb8dfd89"
+ ],
+ "render.RenderSubagentItem @+0x60 -> `⋆`": [
+  "8cb21e01aac21050"
  ],
  "render.RenderSubagentItem @+0x64 -> `⋆`": [
   "8cb21e01aac21050"
@@ -211,6 +206,12 @@
  "render.collapsedThinkingSnippet -> fit to the width minus the collapsed CoT header": [
   "bdc5c2efa50a15de"
  ],
+ "render.glamourStyle -> inline `code` check uses palette[+0x0d0] (ANSI 3)": [
+  "a4da03e3835e8da3"
+ ],
+ "render.glamourStyle -> inline `code` color uses palette[+0x0d0] (ANSI 3)": [
+  "5255a4048401e14d"
+ ],
  "render.glamourStyleForScheme -> inline `code` check uses palette[+0x0d0] (ANSI 3)": [
   "a4da03e3835e8da3"
  ],
@@ -256,6 +257,12 @@
  "render.semanticMilestoneLines @+0x408 -> `⊹`": [
   "00301e07eb8dfd89"
  ],
+ "render.semanticMilestoneLines @+0x40c -> `⊹`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.semanticMilestoneLines @+0x964 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.semanticMilestoneLines @+0x994 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
@@ -263,6 +270,9 @@
   "00301e07eb8dfd89"
  ],
  "render.statusMarker @+0x168 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.statusMarker @+0x16c -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.statusMarker @+0xfc -> `⋆`": [
@@ -330,25 +340,49 @@
  "render.toolMarker @+0x1b0 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.toolMarker @+0x1b4 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.toolMarker @+0x21c -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.toolMarker @+0x224 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.toolMarker @+0x288 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.toolMarker @+0x294 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.workflowAgentRow @+0x150 -> `⊹`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowAgentRow @+0x154 -> `⊹`": [
   "00301e07eb8dfd89"
  ],
  "render.workflowAgentRow @+0x1bc -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.workflowAgentRow @+0x1c0 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.workflowAgentRow @+0x228 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowAgentRow @+0x22c -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.workflowAgentRow @+0x7c -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.workflowAgentRow @+0x80 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.workflowAgentRow @+0xe8 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowAgentRow @+0xec -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.workflowCallRow @+0x104 -> `⋆`": [
@@ -366,10 +400,19 @@
  "render.workflowMarker @+0x174 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.workflowMarker @+0x178 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.workflowMarker @+0x1e0 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.workflowMarker @+0x1e8 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.workflowMarker @+0x60 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.workflowMarker @+0x64 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "store.(*Manager).SetTerminalBackground -> live Dark(237)/Light(254) user bar + RerenderAll": [
@@ -433,7 +476,8 @@
   "0bcf2cbfbfdd7ca2"
  ],
  "themerender.runningLightAt -> the band's base is the turn's stage color, not palette[+0x130]": [
-  "084fd15277ddc00b"
+  "084fd15277ddc00b",
+  "9b9589c68a088d38"
  ],
  "types.init -> terminal palette[+0x020] (Spinner & TUI Selector) nil (Primary Fg)": [
   "8b4cd2851f0fad67"

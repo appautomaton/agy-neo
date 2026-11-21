@@ -46,7 +46,6 @@ TARGET_SYMBOLS: dict[str, str] = {
     "StickyPrompt": "google3/third_party/jetski/cli/render/render.StickyPrompt",
     "typesInit": "google3/third_party/jetski/cli/types/types.init",
     "resolveStyles": "google3/third_party/jetski/cli/render/render.resolveStyles",
-    "glamourStyleForScheme": "google3/third_party/jetski/cli/render/render.glamourStyleForScheme",
     "userInputLoop": "google3/third_party/jetski/cli/store/store.(*Manager).userInputLoop",
     "triggerStatusLineUpdate": "google3/third_party/jetski/cli/store/store.(*Manager).triggerStatusLineUpdate",
     "StatusLineRunnerRun": "google3/third_party/jetski/cli/store/store.(*StatusLineRunner).Run",
@@ -122,9 +121,8 @@ TARGET_SYMBOLS: dict[str, str] = {
     "halloweenInit": "google3/third_party/jetski/cli/theme/halloween/halloween.init",
     "halloweenInit0": "google3/third_party/jetski/cli/theme/halloween/halloween.init.0",
     "halloweenRunningLight": "google3/third_party/jetski/cli/theme/halloween/halloween.halloween.RunningLight",
+    "halloweenPaint": "google3/third_party/jetski/cli/theme/halloween/halloween.paint",
     "setToolResultRoleToUser": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.setToolResultRoleToUser",
-    "StreamGenerateContentFromGateway": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*CodeAssistClient).StreamGenerateContentFromGateway",
-    "GenerateContentFromGateway": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*CodeAssistClient).GenerateContentFromGateway",
     "ccpaGenerate": "google3/third_party/jetski/language_server/modelapiccpa/modelapiccpa.(*Client).Generate",
     "keepAlivePings": "google3/third_party/jetski/language_server/modelapiccpa/modelapiccpa.keepAlivePings",
     "keepAlivesBeforeRequest": "google3/third_party/jetski/language_server/modelapiccpa/modelapiccpa.(*keepAlives).beforeRequest",
@@ -136,17 +134,15 @@ TARGET_SYMBOLS: dict[str, str] = {
     "mapdeleteFaststr": "runtime.mapdelete_faststr",
     "thoughtBodyRows": "google3/third_party/jetski/cli/render/render.thoughtBodyRows",
     "isInFlightThinkingOnly": "google3/third_party/jetski/cli/render/render.isInFlightThinkingOnly",
-    "defaultmodelsInit": "google3/third_party/jetski/models/defaults/defaultmodels.init",
-    "Gemini36Flash": "google3/third_party/jetski/models/defaults/defaultmodels.Gemini36Flash",
-    "Gemini37Flash": "google3/third_party/jetski/models/defaults/defaultmodels.Gemini37Flash",
-    "GeminiModelInfo": "google3/third_party/jetski/models/defaults/defaultmodels.GeminiModelInfo",
-    "geminiCatalog": "google3/third_party/jetski/models/geminimodels/geminimodels.Catalog",
-    "geminiDetails": "google3/third_party/jetski/models/geminimodels/geminimodels.details",
 }
 
-# Symbols present only in newer releases (used to auto-retire patches upstream superseded).
+# Version-variant symbols (v1.5.14 unified Gateway request building and renamed glamourStyleForScheme -> glamourStyle).
 OPTIONAL_SYMBOLS: dict[str, str] = {
-    "Gemini4Neon": "google3/third_party/jetski/models/defaults/defaultmodels.Gemini4Neon",
+    "glamourStyle": "google3/third_party/jetski/cli/render/render.glamourStyle",
+    "glamourStyleForScheme": "google3/third_party/jetski/cli/render/render.glamourStyleForScheme",
+    "buildGatewayHTTPRequest": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*CodeAssistClient).buildGatewayHTTPRequest",
+    "StreamGenerateContentFromGateway": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*CodeAssistClient).StreamGenerateContentFromGateway",
+    "GenerateContentFromGateway": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*CodeAssistClient).GenerateContentFromGateway",
 }
 
 # 1M-window models that upstream `backend.ContextWindowSelectable` (["Gemini 4 Argon"]) omits. Sites
@@ -373,7 +369,7 @@ def fold_lipgloss_copy_x5_x4(attr_mask: int) -> bytes:
 
 def locate_target_functions(data: bytes | bytearray) -> dict[str, tuple[int, int]]:
     """Parse Mach-O __lrodata_gopcln to return {key: (start_offset, end_offset)}, cached by Mach-O header digest."""
-    sym_sig = hashlib.blake2b(repr(sorted(TARGET_SYMBOLS.items())).encode(), digest_size=4).hexdigest()
+    sym_sig = hashlib.blake2b(repr(sorted((*TARGET_SYMBOLS.items(), *OPTIONAL_SYMBOLS.items()))).encode(), digest_size=4).hexdigest()
     hdr_key = f"{len(data)}:{hashlib.blake2b(bytes(data[:4096]), digest_size=8).hexdigest()}:{sym_sig}"
     cache = _load_meta_cache()
     cached_bounds = cache.get("pclntab", {}).get(hdr_key)
@@ -494,12 +490,16 @@ def branch_target(word: int, off: int) -> int | None:
 
 
 def assert_unreachable(
-    data: bytes | bytearray, func_bounds: tuple[int, int], span: tuple[int, int], label: str
+    data: bytes | bytearray,
+    func_bounds: tuple[int, int],
+    span: tuple[int, int],
+    label: str,
+    ignore: tuple[int, ...] = (),
 ) -> None:
     """Refuse a code cave that any branch from elsewhere in its function can reach."""
     start, end = func_bounds
     for off in range(start, end, 4):
-        if span[0] <= off < span[1]:
+        if span[0] <= off < span[1] or off in ignore:
             continue
         target = branch_target(struct.unpack_from("<I", data, off)[0], off)
         if target is not None and span[0] <= target < span[1]:
@@ -1006,10 +1006,26 @@ def _resolve_statusline_refresh_sites(
     )
 
 
+def _decode_x27_sp_add(data: bytes | bytearray, off: int) -> tuple[int, int] | None:
+    """Decode `add x27, sp, #imm` (4B) or `add x27, sp, #lo; add x27, x27, #hi, lsl #12` (8B) -> (size, sp_off)."""
+    w0 = struct.unpack_from("<I", data, off)[0]
+    if w0 & 0xFFC003FF == 0x910003FB:  # add x27, sp, #lo
+        lo = (w0 >> 10) & 0xFFF
+        w1 = struct.unpack_from("<I", data, off + 4)[0]
+        if w1 & 0xFFC003FF == 0x9140037B:  # add x27, x27, #hi, lsl #12
+            return 8, (((w1 >> 10) & 0xFFF) << 12) + lo
+        return 4, lo
+    dec = _decode_sp_add(data, off)
+    if dec is not None and dec[1] == 27:
+        return dec[0], dec[2]
+    return None
+
+
 def _resolve_palette_and_typography_sites(
     data: bytes | bytearray, funcs: dict[str, tuple[int, int]]
 ) -> tuple[tuple[PatchSite, ...], tuple[PatchSite, ...], int]:
     """Sites #12-#14, #16-#22 & #24-#34: `"terminal"` ANSI palette, `● Tool(xxx)` typography, and the user prompt bar."""
+    word = lambda o: struct.unpack_from("<I", data, o)[0]
     # 12 & 13. types.init ("terminal" palette) ->
     #   Site 12: palette[+0x020] (Spinner shimmer & TUI Selector) from ANSI "12" to nil (Primary Foreground)
     #   Site 13: palette[+0x040] (User prompt) from ANSI "4" to nil (Primary Foreground)
@@ -1019,9 +1035,22 @@ def _resolve_palette_and_typography_sites(
         bytes.fromhex("a30080d25f7c81a85f7c81a85f7c81a85f7c81a8630400d163ffffb5"),
         "Site 12 (types.init terminal palette[+0x020])",
     )
-    s12_off = s12_base + 0x0C
+    w_pal_base = word(s12_base - 0x20)
+    if w_pal_base & 0xFFC003FF != 0x910003E2:  # add x2, sp, #pal_base
+        raise RuntimeError("types.init: terminal palette zero-loop no longer opens with `add x2, sp, #imm`")
+    pal_base = (w_pal_base >> 10) & 0xFFF
+    def _find_pal_store(field_off: int, label: str) -> int:
+        want = 0x910003FB | ((pal_base + field_off) << 10)  # add x27, sp, #(pal_base + field_off)
+        hits = [
+            o + 4 for o in range(s12_base, min(s12_base + 0x80, funcs["typesInit"][1] - 4), 4)
+            if word(o) == want and word(o + 4) in (0xA9000F62, 0xA9007F7F)
+        ]
+        if len(hits) != 1:
+            raise RuntimeError(f"Expected 1 match for {label}, got {len(hits)}")
+        return hits[0]
+    s12_off = _find_pal_store(0x20, "Site 12 (types.init terminal palette[+0x020])")
     s12_va = VM_BASE + s12_off
-    s13_off = s12_base + 0x2C
+    s13_off = _find_pal_store(0x40, "Site 13 (types.init terminal palette[+0x040])")
     s13_va = VM_BASE + s13_off
 
     # 14. render.resolveStyles ("terminal" scheme) -> mouse selection highlight uses native Reverse (\x1b[7m)
@@ -1035,11 +1064,11 @@ def _resolve_palette_and_typography_sites(
         if idx == -1:
             break
         if (
-            idx + 0xA4 <= rs_end
+            idx + 0xE0 <= rs_end
             and data[idx - 0x98 : idx - 0x94] == bytes.fromhex("e10340b2")
             and data[idx - 0x44 : idx - 0x40] == bytes.fromhex("e10375b2")
             and data[idx + 0x54 : idx + 0x58] == bytes.fromhex("e10376b2")
-            and struct.unpack_from("<I", data, idx + 0xA0)[0] == copy_styles
+            and any(word(o) == copy_styles for o in range(idx + 0x9C, min(idx + 0xE0, rs_end), 4))
         ):
             s14_matches.append(idx + 0x6C)
         pos = idx + 1
@@ -1048,57 +1077,122 @@ def _resolve_palette_and_typography_sites(
     s14_off = s14_matches[0]
     s14_va = VM_BASE + s14_off
 
-    # 16. render.resolveStyles -> PromptChevron (`>` in live input box, Styles[+0x2370]) uses native Faint (\x1b[2m)
-    pal_copy_loop = bytes.fromhex("b80080d29044c1ac704481ac9044c1ac704481ac180700d178ffffb5")
+    # 16, 19, 20, 21. render.resolveStyles -> locate the SchemeColors frame slot from the `mov x24, #5`
+    # palette copy whose `pal + 0x40` load opens UserPrompt (`Bold` -> Site #21), followed by ToolName
+    # (`pal + 0xD0` -> `pal + 0x10`, Site #19), ToolArgs (`pal + 0x120`, Site #20), and PromptChevron (Site #16).
     zero_loop_x5 = bytes.fromhex("450180d29f7c81a89f7c81a89f7c81a89f7c81a8a50400d165ffffb59f0000f9")
-    off_after_pal_loop = find_unique_anchor(data, funcs["resolveStyles"], pal_copy_loop, "Site 16 (resolveStyles pal_copy)")
-    # The palette's frame slot: `add x3, sp, #pal` opens the copy. The first three styles built after it
-    # are UserPrompt (fg palette[+0x040], Bold), ToolName (fg palette[+0x0d0], Bold) and ToolArgs (fg
-    # palette[+0x120]); each starts by addressing its color, `add x27, sp, #pal+N`. v1.5.8 builds its two
-    # search highlights between the copy and UserPrompt, so Sites #19-#21 are located from UserPrompt's
-    # `add x27`, which no site rewrites, instead of from the copy.
-    (pal_add,) = struct.unpack_from("<I", data, off_after_pal_loop - 0x28)
-    if pal_add & 0xFFC003FF != 0x910003E3:
-        raise RuntimeError("resolveStyles: the palette copy no longer opens with `add x3, sp, #pal`")
-    insn_f0 = 0x910003FB | ((((pal_add >> 10) & 0xFFF) + 0x40) << 10)  # add x27, sp, #pal+0x40
-    user_prompt = [
-        o for o in range(off_after_pal_loop, min(off_after_pal_loop + 0x400, rs_end), 4)
-        if struct.unpack_from("<I", data, o)[0] == insn_f0
-    ]
-    if len(user_prompt) != 1:
-        raise RuntimeError(f"resolveStyles: expected one UserPrompt color load after the palette copy, found {len(user_prompt)}")
-    up_off = user_prompt[0]
-    z_off = data.find(zero_loop_x5, off_after_pal_loop, rs_end)
+    pal_candidates: list[tuple[int, int, int]] = []  # (pal_sp, up_off, up_add_len)
+    for o in range(rs_start, min(rs_start + 0x600, rs_end - 0x20), 4):
+        if word(o) != 0xD28000B8:  # mov x24, #5 (368B SchemeColors copy)
+            continue
+        dst_reg = (word(o + 8) >> 5) & 0x1F  # stp q16, q17, [xD], #0x20
+        pal_sp = None
+        for back in range(o - 4, max(rs_start, o - 24), -4):
+            dec = _decode_sp_add(data, back)
+            if dec is not None and dec[1] == dst_reg:
+                pal_sp = dec[2]
+                break
+        if pal_sp is None:
+            continue
+        for uo in range(o + 0x18, min(o + 0x400, rs_end - 0x80), 4):
+            d27 = _decode_x27_sp_add(data, uo)
+            if (
+                d27 is not None
+                and d27[1] == pal_sp + 0x40
+                and word(uo + d27[0]) == 0xA9400F62  # ldp x2, x3, [x27]
+            ):
+                pal_candidates.append((pal_sp, uo, d27[0]))
+                break
+    # Deduplicate by up_off (in case multiple copies target the same slot)
+    unique_ups = {(p, u, l) for p, u, l in pal_candidates}
+    if len(unique_ups) != 1:
+        raise RuntimeError(f"resolveStyles: expected one UserPrompt color load after SchemeColors copy, found {len(unique_ups)}")
+    pal_sp, up_off, up_add_len = unique_ups.pop()
+    z_off = data.find(zero_loop_x5, up_off, rs_end)
     if z_off == -1:
         raise RuntimeError("Site 16 (resolveStyles zero_loop_x5) not found")
     s16_off = z_off - 0x2C
     s16_va = VM_BASE + s16_off
 
-    # 17 & 18. render.glamourStyleForScheme -> decouple inline `code` (Code.Color) from palette[+0x020] to palette[+0x0d0] (ANSI 3)
-    gs_start, gs_end = funcs["glamourStyleForScheme"]
-    s17_matches = [
-        o for o in range(gs_start, gs_end - 0x24, 4)
-        if struct.unpack_from("<I", data, o)[0] in (0xF9402FE1, 0xF94087E1)
-        and struct.unpack_from("<I", data, o + 4)[0] & 0xFF00001F == 0xB4000001
-        and struct.unpack_from("<I", data, o + 8)[0] == 0xB27C03E0
-        and struct.unpack_from("<I", data, o + 0x20)[0] in (0xA94587E0, 0xA95087E0)
-    ]
-    if len(s17_matches) != 1:
-        raise RuntimeError(f"Expected 1 match for Site 17 (glamourStyleForScheme Code.Color check), got {len(s17_matches)}")
-    s17_off = s17_matches[0]
+    # 17 & 18. render.glamourStyle (v1.5.14+) / render.glamourStyleForScheme (v1.5.13) ->
+    # decouple inline `code` (Code.Color) from palette[+0x020] (Accent) to palette[+0x0d0] (ToolFg, ANSI 3)
+    if "glamourStyle" in funcs:
+        gs_name = "render.glamourStyle"
+        gs_start, gs_end = funcs["glamourStyle"]
+        gs_pal_off = _go_frame(data, (gs_start, gs_end)) + 8
+        gs_acc_off = gs_pal_off + 0x20
+        gs_tool_off = gs_pal_off + 0xD0
+        w_acc_ldr = 0xF94003E1 | ((gs_acc_off // 8) << 10)
+        w_tool_ldr = 0xF94003E1 | ((gs_tool_off // 8) << 10)
+        w_acc_ldp = 0xA94007E0 | ((gs_acc_off // 8) << 15)
+        w_tool_ldp = 0xA94007E0 | ((gs_tool_off // 8) << 15)
+        s17_matches = [
+            o for o in range(gs_start, gs_end - 0x34, 4)
+            if word(o) in (w_acc_ldr, w_tool_ldr)
+            and word(o + 4) & 0xFF00001F == 0xB4000001
+            and word(o + 0x18) == 0xB27C03E0
+            and word(o + 0x30) in (w_acc_ldp, w_tool_ldp)
+        ]
+        if len(s17_matches) != 1:
+            raise RuntimeError(f"Expected 1 match for Site 17 ({gs_name} Code.Color check), got {len(s17_matches)}")
+        s17_off = s17_matches[0]
+        s18_off = s17_off + 0x30
+        s17_orig, s17_patched = struct.pack("<I", w_acc_ldr), struct.pack("<I", w_tool_ldr)
+        s18_orig, s18_patched = struct.pack("<I", w_acc_ldp), struct.pack("<I", w_tool_ldp)
+    else:
+        gs_name = "render.glamourStyleForScheme"
+        gs_start, gs_end = funcs["glamourStyleForScheme"]
+        s17_matches = [
+            o for o in range(gs_start, gs_end - 0x24, 4)
+            if word(o) in (0xF9402FE1, 0xF94087E1)
+            and word(o + 4) & 0xFF00001F == 0xB4000001
+            and word(o + 8) == 0xB27C03E0
+            and word(o + 0x20) in (0xA94587E0, 0xA95087E0)
+        ]
+        if len(s17_matches) != 1:
+            raise RuntimeError(f"Expected 1 match for Site 17 ({gs_name} Code.Color check), got {len(s17_matches)}")
+        s17_off = s17_matches[0]
+        s18_off = s17_off + 0x20
+        s17_orig, s17_patched = bytes.fromhex("e12f40f9"), bytes.fromhex("e18740f9")
+        s18_orig, s18_patched = bytes.fromhex("e08745a9"), bytes.fromhex("e08750a9")
     s17_va = VM_BASE + s17_off
-    s18_off = s17_off + 0x20
     s18_va = VM_BASE + s18_off
 
     # 19 & 20. render.resolveStyles ->
     #   Site 19: Styles[+0x0288] (ToolName `Bash`/`Edit`/`Read`) reads palette[+0x010] (colorless Bold)
     #   Site 20: Styles[+0x0510] (ToolArgs `(xxx)` & CoT header) uses native terminal Faint (\x1b[2m)
-    s19_off = up_off + 0xD0
+    s19_hits = [
+        (o, d[0], d[1]) for o in range(up_off + 0x80, min(up_off + 0x160, rs_end - 8), 4)
+        if (d := _decode_x27_sp_add(data, o)) is not None
+        and d[1] in (pal_sp + 0xD0, pal_sp + 0x10)
+        and word(o + d[0]) == 0xA9400F62  # ldp x2, x3, [x27]
+    ]
+    if len(s19_hits) != 1:
+        raise RuntimeError(f"resolveStyles: expected one ToolName color load after UserPrompt, found {len(s19_hits)}")
+    s19_off, s19_len, _ = s19_hits[0]
     s19_va = VM_BASE + s19_off
-    s19_orig = struct.pack("<I", insn_f0 + (0x90 << 10))
-    s19_patched = struct.pack("<I", insn_f0 - (0x30 << 10))
+    if ((pal_sp + 0xD0) >> 12) != ((pal_sp + 0x10) >> 12):
+        raise RuntimeError(f"resolveStyles: ToolName palette slots {hex(pal_sp + 0xD0)} and {hex(pal_sp + 0x10)} cross 4KB boundary")
+    s19_orig = struct.pack("<I", 0x910003FB | (((pal_sp + 0xD0) & 0xFFF) << 10))
+    s19_patched = struct.pack("<I", 0x910003FB | (((pal_sp + 0x10) & 0xFFF) << 10))
 
-    s20_off = up_off + 0x1D0
+    s20_loads = [
+        (o, d[0]) for o in range(s19_off + 0x80, min(s19_off + 0x180, rs_end - 0x50), 4)
+        if (d := _decode_x27_sp_add(data, o)) is not None
+        and d[1] == pal_sp + 0x120
+        and word(o + d[0]) == 0xA9400F62  # ldp x2, x3, [x27]
+    ]
+    if len(s20_loads) != 1:
+        raise RuntimeError(f"resolveStyles: expected one ToolArgs color load after ToolName, found {len(s20_loads)}")
+    ta_off = s20_loads[0][0]
+    s20_pat_folded = fold_lipgloss_copy_x5_x4(0x20)
+    s20_hits = [
+        o for o in range(ta_off + 0x10, min(ta_off + 0x60, rs_end - 36), 4)
+        if bytes(data[o : o + 36]) in (LIPGLOSS_COPY_LOOP_X5_X4_ORIG, s20_pat_folded)
+    ]
+    if len(s20_hits) != 1:
+        raise RuntimeError(f"resolveStyles: expected one ToolArgs copy loop after pal+0x120 load, found {len(s20_hits)}")
+    s20_off = s20_hits[0]
     s20_va = VM_BASE + s20_off
 
     # 21. render.resolveStyles -> Styles[+0x0000] (UserPrompt) Regular weight + adaptive 256-color background
@@ -1109,7 +1203,15 @@ def _resolve_palette_and_typography_sites(
     bg_byte_va = zerobase_va - 8
     bg_byte_imm12 = bg_byte_va & 0xFFF
 
-    s21_off = up_off + 0x5C
+    s21_hits = [
+        o for o in range(up_off + 0x30, min(up_off + 0x80, rs_end - 20), 4)
+        if word(o) in (0xB24003E1, 0xB27503E1)
+        and word(o + 4) & 0x9F00001F == 0x90000002 and word(o + 8) & 0xFFC003FF == 0x91000042
+        and word(o + 12) & 0x9F00001F == 0x90000003 and word(o + 16) & 0xFFC003FF == 0x91000063
+    ]
+    if len(s21_hits) != 1:
+        raise RuntimeError(f"resolveStyles: UserPrompt no longer sets Bold where Site 21 expects it (found {len(s21_hits)})")
+    s21_off = s21_hits[0]
     s21_va = VM_BASE + s21_off
     s21_orig = bytes(data[s21_off : s21_off + 20])
     s21_patched = (
@@ -1117,16 +1219,8 @@ def _resolve_palette_and_typography_sites(
         + encode_adrp_add(s21_va + 4, ext_color_type_va, 2)
         + encode_adrp_add(s21_va + 12, bg_byte_va, 3)
     )
-    # The original is read from the binary, so prove the shape: stock is `orr x1, xzr, #1` (Bold) and its
-    # `true` in x2, x3; anything else must already be this site.
-    s21_words = struct.unpack_from("<5I", data, s21_off)
-    s21_stock = (
-        s21_words[0] == 0xB24003E1
-        and s21_words[1] & 0x9F00001F == 0x90000002 and s21_words[2] & 0xFFC003FF == 0x91000042
-        and s21_words[3] & 0x9F00001F == 0x90000003 and s21_words[4] & 0xFFC003FF == 0x91000063
-    )
-    if not s21_stock and s21_orig != s21_patched:
-        raise RuntimeError("resolveStyles: UserPrompt no longer sets Bold where Site 21 expects it")
+    if s21_orig == s21_patched:
+        s21_orig = None
 
     # 22, 24, 25. render.renderUserPrompt ->
     #   Site 24: replace `───` rule setup with full-width background (`s.props=0x2800`, `s.width=termWidth`) + inline strings
@@ -1351,19 +1445,19 @@ def _resolve_palette_and_typography_sites(
         ),
         PatchSite(
             domain="palette-typography",
-            name="render.glamourStyleForScheme -> inline `code` check uses palette[+0x0d0] (ANSI 3)",
+            name=f"{gs_name} -> inline `code` check uses palette[+0x0d0] (ANSI 3)",
             va=s17_va,
             offset=s17_off,
-            original=bytes.fromhex("e12f40f9"),
-            patched=bytes.fromhex("e18740f9"),
+            original=s17_orig,
+            patched=s17_patched,
         ),
         PatchSite(
             domain="palette-typography",
-            name="render.glamourStyleForScheme -> inline `code` color uses palette[+0x0d0] (ANSI 3)",
+            name=f"{gs_name} -> inline `code` color uses palette[+0x0d0] (ANSI 3)",
             va=s18_va,
             offset=s18_off,
-            original=bytes.fromhex("e08745a9"),
-            patched=bytes.fromhex("e08750a9"),
+            original=s18_orig,
+            patched=s18_patched,
         ),
         PatchSite(
             domain="palette-typography",
@@ -1761,13 +1855,12 @@ def _go_frame(data: bytes | bytearray, bounds: tuple[int, int]) -> int:
     raise RuntimeError(f"No frame-reserving prologue at {hex(VM_BASE + bounds[0])}")
 
 
-def _gemini_fill(data: bytes | bytearray) -> tuple[int, bytes, dict]:
-    """The strings Sites #49 and #56 add, laid out at the end of the __TEXT fill: (offset, blob, VAs).
+def _gemini_fill(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[int, bytes, dict]:
+    """Read-only strings and tables for Sites #49, #56 and #57, laid out in dead `halloween.paint`.
 
-    `at` maps each frame and band color (bytes) to its VA, and holds "rgba" (the word's color for each
-    stage of a long turn, 4 bytes each, blue first) and
-    "verbs" (16-byte records: a length byte, then the verb). Nothing here holds a pointer: a pointer in
-    new memory would not be slid by the loader (Site #49's note), so code addresses these PC-relatively.
+    Site #49d disables Halloween registration, so `halloween.paint` (~2.5KB) is unreachable; placing pure
+    read-only data there frees the Mach-O `__TEXT` tail fill strictly for small executable leaf detours
+    (where `findfunc(pc)` is invalid so Go never asynchronously preempts them).
     """
     frames = list(dict.fromkeys(_breath_frame(*f) for f in SPINNER_BREATH))
     colors = [c.encode() for c in GEMINI_BAND_DARK + GEMINI_BAND_LIGHT]
@@ -1776,19 +1869,17 @@ def _gemini_fill(data: bytes | bytearray) -> tuple[int, bytes, dict]:
         raise RuntimeError("each pending-line verb must be 1-15 ASCII bytes")
     verbs = b"".join((bytes([len(v)]) + v.encode()).ljust(16, b"\x00") for v in PENDING_VERBS)
     marks = [m.encode() for m in TOOL_MARKS.values()]
-    blob = verbs + rgba + b"".join(frames) + b"".join(colors) + b"".join(marks)
-    fill, fill_end = _text_tail_cave(data)
-    cave = (fill_end - len(blob)) & ~0xF
-    if cave < fill + 0x400:  # leave the head of the fill to the sites that grow from it (#55a)
-        raise RuntimeError(f"__TEXT has {fill_end - fill}B of fill; Sites #49 and #56 need {len(blob)}B at its end")
-    if bytes(data[cave : cave + len(blob)]) not in (bytes(len(blob)), blob):
-        raise RuntimeError(f"__TEXT fill at {hex(VM_BASE + cave)} holds neither zeros nor the Gemini strings")
-    at: dict = {"verbs": VM_BASE + cave, "rgba": VM_BASE + cave + len(verbs)}
+    raw = verbs + rgba + b"".join(frames) + b"".join(colors) + b"".join(marks)
+    blob = raw.ljust((len(raw) + 15) & ~15, b"\x00")
+    paint_start, paint_end = funcs["halloweenPaint"]
+    if len(blob) > paint_end - paint_start:
+        raise RuntimeError(f"halloween.paint has {paint_end - paint_start}B; Sites #49/#56/#57 data needs {len(blob)}B")
+    at: dict = {"verbs": VM_BASE + paint_start, "rgba": VM_BASE + paint_start + len(verbs)}
     pos = at["rgba"] + len(rgba)
     for x in frames + colors + marks:
         at[x] = pos
         pos += len(x)
-    return cave, blob, at
+    return paint_start, blob, at
 
 
 def _resolve_spinner_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
@@ -1837,12 +1928,11 @@ def _resolve_spinner_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
         raise RuntimeError("halloween.RunningLight no longer returns two 5-color tables")
     (light_va, _, _), (dark_va, _, _) = bands  # fall-through (flag set) first, then the branch target
 
-    # 49a. The strings, at the end of the __TEXT fill (with the pending line's verbs, Site #56a, and the
-    # tool marks, Site #57).
-    cave, blob, at = _gemini_fill(data)
+    # 49a. Read-only strings/tables in dead `halloween.paint` (with verbs #56a and tool marks #57).
+    cave, blob, at = _gemini_fill(data, funcs)
     frames = [_breath_frame(*f) for f in SPINNER_BREATH]
-    site("__TEXT fill -> the breathing star's frames, the Gemini band, the long-turn colors, the pending line's verbs, and the tool marks",
-         cave, bytes(len(blob)), blob)
+    site("halloween.paint -> the breathing star's frames, the Gemini band, the long-turn colors, the pending line's verbs, and the tool marks",
+         cave, stock_or_none(cave, blob), blob)
 
     # 49b. Halloween's logo rows -> the 24 frames.
     table = b"".join(struct.pack("<QQ", at[f], len(f)) for f in frames)
@@ -1959,21 +2049,36 @@ def _resolve_spinner_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
         code += encode_adrp_add(here + 12, rgba_itab, 2)                            # x2 = the color.Color itab
         return code + encode_b(here + 20, back)
 
-    def base_load(o: int) -> bytes:
-        return encode_b(VM_BASE + o, light_va) + NOP * 7
+    def base_load(o: int, n_nops: int) -> bytes:
+        return encode_b(VM_BASE + o, light_va) + NOP * n_nops
 
-    dims = [o - 0x1C for o in range(la[0] + 0x1C, la[1] - 4, 4)
-            if (word(o) == la_ldp and word(o - 4) >> 26 == 0x25 and word(o - 0x1C) & 0x9F00001F == 0x9000001B)
-            or bytes(data[o - 0x1C : o + 4]) == base_load(o - 0x1C)]
-    if len(dims) != 1:
-        raise RuntimeError(f"themerender.runningLightAt: expected one palette lookup for the band's base, found {len(dims)}")
-    detour = light(VM_BASE + dims[0] + 0x20)
+    # v1.5.14+: runningLightAt copies SchemeColors onto the stack and loads DimFg via `add x27, sp, #imm; ldp x2, x3, [x27]`
+    # right before `cbz x2, +8; ldr x2, [x2, #8]`. v1.5.13 looked up the palette map inline and read `ldp x2, x3, [x0, #0x130]`.
+    dims_v14 = [
+        o for o in range(la[0], la[1] - 0x10, 4)
+        if word(o + 8) == 0xB4000042 and word(o + 12) == 0xF9400442  # cbz x2, +8; ldr x2, [x2, #8]
+        and (
+            (word(o) & 0xFFC003FF == 0x910003FB and word(o + 4) == 0xA9400F62)  # add x27, sp, #imm; ldp x2, x3, [x27]
+            or (word(o) >> 26 == 0x05 and bytes(data[o + 4 : o + 8]) == NOP)    # patched: b <leaf>; nop
+        )
+    ]
+    dims_v13 = [
+        o - 0x1C for o in range(la[0] + 0x1C, la[1] - 4, 4)
+        if (word(o) == la_ldp and word(o - 4) >> 26 == 0x25 and word(o - 0x1C) & 0x9F00001F == 0x9000001B)
+        or (word(o - 0x1C) >> 26 == 0x05 and bytes(data[o - 0x18 : o + 4]) == NOP * 7)  # patched: b <leaf>; 7× nop
+    ]
+    if len(dims_v14) == 1 and not dims_v13:
+        dim_off, dim_len, dim_nops = dims_v14[0], 8, 1
+    elif len(dims_v13) == 1 and not dims_v14:
+        dim_off, dim_len, dim_nops = dims_v13[0], 0x20, 7
+    else:
+        raise RuntimeError(f"themerender.runningLightAt: expected one DimFg base load, found v14={len(dims_v14)} v13={len(dims_v13)}")
+    detour = light(VM_BASE + dim_off + dim_len)
     if len(detour) > LIGHT_LEAF_ROOM:
         raise RuntimeError(f"the stage-color leaf takes {len(detour)}B; it has {LIGHT_LEAF_ROOM}B before Site #50i")
-    if bytes(data[light_va - VM_BASE : light_va - VM_BASE + len(detour)]) not in (bytes(len(detour)), detour):
-        raise RuntimeError(f"__TEXT fill at {hex(light_va)} holds neither zeros nor the stage-color leaf")
+    dim_patched = base_load(dim_off, dim_nops)
     site("themerender.runningLightAt -> the band's base is the turn's stage color, not palette[+0x130]",
-         dims[0], stock_or_none(dims[0], base_load(dims[0])), base_load(dims[0]))
+         dim_off, stock_or_none(dim_off, dim_patched), dim_patched)
     site("__TEXT fill -> runningLightAt's leaf: seconds into the turn -> a color from blue through purple to rose",
          light_va - VM_BASE, bytes(len(detour)), detour)
 
@@ -2033,7 +2138,7 @@ def _resolve_spinner_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
         raise RuntimeError("pendingLineView no longer loads its spilled line in the decoration join")
     ptr_slot, len_slot = p_sl[1], l_sl[1]
     if (branch_target(word(c + 4), c + 4) != join or branch_target(word(call3), call3) != funcs["concatstring3"][0]
-            or word(c + 16) >> 26 != 0x05 or word(join) not in (0xAA0103E2, *struct.unpack("<I", encode_b(VM_BASE + join, VM_BASE + _gap_leaf_base(data))))):
+            or word(c + 16) >> 26 != 0x05 or (word(join) != 0xAA0103E2 and word(join) >> 26 != 0x05)):
         raise RuntimeError("pendingLineView's tail no longer joins decoration, newline and line")
     nn = next((o for o in _find_all(data, b"\n\n") if o >= _text_section(data)[1]), None)
     if nn is None or nn >= _text_tail_cave(data)[0]:
@@ -2169,15 +2274,15 @@ def _elapsed_formats() -> dict:
     return formats
 
 
-ELAPSED_CODE = 0x280  # bytes the detours, the effort matcher and its tables may take before the formats
+ELAPSED_CODE = 0x1E0  # executable leaf detours + effort matcher in __TEXT tail fill (tables & formats live in halloween.paint)
 
 
 def _elapsed_base(data: bytes | bytearray) -> int:
-    """File offset of Site #50i's detours and formats, just before the Gemini strings in the __TEXT fill."""
-    gemini, _, _ = _gemini_fill(data)
-    base = (gemini - len(b"".join(_elapsed_formats().values())) - ELAPSED_CODE - 0x10) & ~0xF
-    if base < _text_tail_cave(data)[0] + 0x400:
-        raise RuntimeError("the __TEXT fill has no room for elapsedSuffix's detours")
+    """File offset of Site #50i's executable leaf detours at the end of the __TEXT fill."""
+    fill, fill_end = _text_tail_cave(data)
+    base = (fill_end - ELAPSED_CODE) & ~0xF
+    if base < fill:
+        raise RuntimeError(f"__TEXT fill ({fill_end - fill}B) has no room for elapsedSuffix's {ELAPSED_CODE}B detours")
     return base
 
 
@@ -2189,16 +2294,18 @@ GAP_LEAF_ROOM = 0x40  # bytes Site #49k's leaf may take before Site #49h's
 
 def _gap_leaf_base(data: bytes | bytearray) -> int:
     """File offset of Site #49k's leaf, before Site #49h's stage-color leaf."""
+    fill, _ = _text_tail_cave(data)
     base = (_light_detour_base(data) - GAP_LEAF_ROOM) & ~0xF
-    if base < _text_tail_cave(data)[0] + 0x400:
+    if base < fill:
         raise RuntimeError("the __TEXT fill has no room for the pending gap's leaf")
     return base
 
 
 def _light_detour_base(data: bytes | bytearray) -> int:
     """File offset of Site #49h's stage-color leaf, before Site #50i's detours."""
+    fill, _ = _text_tail_cave(data)
     base = (_elapsed_base(data) - LIGHT_LEAF_ROOM) & ~0xF
-    if base < _text_tail_cave(data)[0] + 0x400:
+    if base < fill:
         raise RuntimeError("the __TEXT fill has no room for the stage-color leaf")
     return base
 
@@ -2250,7 +2357,18 @@ def _elapsed_detours(data: bytes | bytearray, funcs: dict[str, tuple[int, int]],
     formats = _elapsed_formats()
     base = _elapsed_base(data)
     va = VM_BASE + base
-    at, pos = {}, va + ELAPSED_CODE
+    # Pure read-only data (effort match table, column-width table, format records, format strings) lives
+    # right after _gemini_fill in dead `halloween.paint`; __TEXT tail fill holds only executable leaf code.
+    gemini_off, gemini_blob, _ = _gemini_fill(data, funcs)
+    paint_end = funcs["halloweenPaint"][1]
+    data_off = gemini_off + len(gemini_blob)
+    data_va = VM_BASE + data_off
+    n_eff = 1 + len(EFFORT_WORDS)
+    match_va = data_va
+    cols_va = match_va + 16 * (len(EFFORT_WORDS) + 1)
+    table_va = (cols_va + n_eff + 7) & ~7
+    fmts_va = table_va + 8 * (2 * n_eff)
+    at, pos = {}, fmts_va
     for k, f in formats.items():
         at[k] = pos
         pos += len(f)
@@ -2264,7 +2382,6 @@ def _elapsed_detours(data: bytes | bytearray, funcs: dict[str, tuple[int, int]],
     # Columns the aside takes beyond the 2 the width already left out: its one leading space, `()`, the state.
     lead = len(ELAPSED_FORMAT) - len(ELAPSED_FORMAT.lstrip(b" "))
     cols = lambda state: lead + len(state)
-    n_eff = 1 + len(EFFORT_WORDS)
 
     # The effort, from the model's label: x10 = m in, x12 = 0 (none) or 1 + its index in EFFORT_WORDS out,
     # back through x15. A leaf reached by a branch, not a call. The label's last 8 bytes are compared
@@ -2327,9 +2444,6 @@ def _elapsed_detours(data: bytes | bytearray, funcs: dict[str, tuple[int, int]],
     fmt += b"FMTT" * 2 + pack(0x8B0C0D49, 0x2940052B, 0x8B0B0140)                          # x10 = table; x9 = x10 + x12*8; ldp w11, w1; x0 = x10 + w11
     fmt += encode_b(fmt_va + len(fmt), VM_BASE + fmt_load + 12)                          # back to `add x2, sp, #args`
     eff_va = fmt_va + len(fmt)
-    match_va = (eff_va + 4 * 24 + 15) & ~15
-    cols_va = match_va + 16 * (len(EFFORT_WORDS) + 1)
-    table_va = (cols_va + n_eff + 7) & ~7
     eff = effort(eff_va, match_va)
     if len(eff) != 4 * 24:
         raise RuntimeError(f"the effort matcher takes {len(eff)}B, not the 96B laid out")
@@ -2349,14 +2463,14 @@ def _elapsed_detours(data: bytes | bytearray, funcs: dict[str, tuple[int, int]],
     effort_cols = bytes([0] + [len(EFFORT_PHRASE.format(shown)) for _, shown in EFFORT_WORDS])
     records = b"".join(struct.pack("<II", at[("thought", i)] - table_va, len(formats[("thought", i)]))
                        for i in range(2 * n_eff))
-    code = (width + fmt + eff).ljust(match_va - va, b"\0") + matches + effort_cols.ljust(table_va - cols_va, b"\0") + records
+    code = width + fmt + eff
     if len(code) > ELAPSED_CODE:
-        raise RuntimeError(f"elapsedSuffix's detours and tables take {len(code)}B, more than the {ELAPSED_CODE}B laid out")
-    code = code.ljust(ELAPSED_CODE, b"\0")
-    blob = code + b"".join(formats.values())
-    if bytes(data[base : base + len(blob)]) not in (bytes(len(blob)), blob):
-        raise RuntimeError(f"__TEXT fill at {hex(va)} holds neither zeros nor elapsedSuffix's detours")
-    return {"width": va, "format": fmt_va, "blob": blob, "blob_va": va}
+        raise RuntimeError(f"elapsedSuffix's detours take {len(code)}B, more than the {ELAPSED_CODE}B laid out")
+    data_raw = matches + effort_cols.ljust(table_va - cols_va, b"\0") + records + b"".join(formats.values())
+    data_blob = data_raw.ljust((len(data_raw) + 3) & ~3, b"\0")
+    if data_off + len(data_blob) > paint_end:
+        raise RuntimeError(f"halloween.paint has {paint_end - data_off}B left; elapsedSuffix data needs {len(data_blob)}B")
+    return {"width": va, "format": fmt_va, "code": code, "code_va": va, "data": data_blob, "data_off": data_off}
 
 
 def _resolve_elapsed_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
@@ -2392,14 +2506,22 @@ def _resolve_elapsed_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
     site("model.(*ConversationModel).refreshActivityLabel -> stamp the start for every busy state", stamp,
          pack(0xF100007F) + encode_b_ne(VM_BASE + stamp + 4, stamp_va))
 
-    # 50c. activityCandidate: `cmp x0, #7; b.ne label` -> `b label`; Compacting takes its plain label.
-    seven = [o + 4 for o, w in _words(data, (ac[0], ac[1] - 4))
-             if w == 0xF1001C1F and (word(o + 4) & 0xFF00001F == 0x54000001 or word(o + 4) >> 26 == 0x05)]
-    if len(seven) != 1:
-        raise RuntimeError(f"activityCandidate: expected one Compacting test, found {len(seven)}")
-    br = seven[0]
-    site("model.(*ConversationModel).activityCandidate -> Compacting shows its plain label", br,
-         encode_b(VM_BASE + br, VM_BASE + branch_target(word(br), br)))
+    # 50c. activityCandidate: Compacting takes its plain label.
+    # v1.5.14+: `cmp x0, #7; b.eq compacting; ldr x6, [sp, #m]; b label` -> `nop` (falls through to label).
+    # v1.5.13:  `cmp x0, #7; b.ne label` -> `b label`.
+    seven_eq = [o + 4 for o, w in _words(data, (ac[0], ac[1] - 12))
+                if w == 0xF1001C1F and (word(o + 4) & 0xFF00001F == 0x54000000 or bytes(data[o + 4 : o + 8]) == NOP)
+                and word(o + 12) >> 26 == 0x05]
+    seven_ne = [o + 4 for o, w in _words(data, (ac[0], ac[1] - 4))
+                if w == 0xF1001C1F and (word(o + 4) & 0xFF00001F == 0x54000001 or word(o + 4) >> 26 == 0x05)]
+    if len(seven_eq) == 1 and not seven_ne:
+        site("model.(*ConversationModel).activityCandidate -> Compacting shows its plain label", seven_eq[0], NOP)
+    elif len(seven_ne) == 1 and not seven_eq:
+        br = seven_ne[0]
+        site("model.(*ConversationModel).activityCandidate -> Compacting shows its plain label", br,
+             encode_b(VM_BASE + br, VM_BASE + branch_target(word(br), br)))
+    else:
+        raise RuntimeError(f"activityCandidate: expected one Compacting test, found eq={len(seven_eq)} ne={len(seven_ne)}")
 
     # 50d. compactingLabel(start, now) -> elapsedSuffix(m, pad). Every call it keeps stays at its stock PC,
     # so the stack maps there still describe the frame; slots that hold pointers keep a pointer or nil.
@@ -2478,10 +2600,14 @@ def _resolve_elapsed_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
     sites.append(PatchSite(
         "pending-line", "model.compactingLabel -> elapsedSuffix(m, pad): ` (8s ⋅ thinking)`, faint, of the time since the start",
         VM_BASE + entry, entry, None if patched_cl else bytes(data[entry : fmt_load + 12]), bytes(body)))
-    fill_off = detours["blob_va"] - VM_BASE
+    code_off = detours["code_va"] - VM_BASE
     sites.append(PatchSite(
-        "pending-line", "__TEXT fill -> elapsedSuffix's state formats and its two detours",
-        detours["blob_va"], fill_off, bytes(len(detours["blob"])), detours["blob"]))
+        "pending-line", "__TEXT fill -> elapsedSuffix's two detours and effort matcher",
+        detours["code_va"], code_off, bytes(len(detours["code"])), detours["code"]))
+    data_off, data_blob = detours["data_off"], detours["data"]
+    sites.append(PatchSite(
+        "pending-line", "halloween.paint -> elapsedSuffix's effort tables and state formats",
+        VM_BASE + data_off, data_off, _recoverable(data, data_off, data_blob), data_blob))
 
     # 50e-g. pendingLineView. The path that lays out `frame, text, padding, status` runs only when there
     # is a status; run it always, give the suffix room in the truncation, and call elapsedSuffix for the padding.
@@ -2492,8 +2618,8 @@ def _resolve_elapsed_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
         o for o, w in _words(data, pv)
         if w & 0xFFC00000 == 0xD1000000 and ((w >> 10) & 0xFFF) in (3, ELAPSED_RESERVE)
     ]
-    if len(reserve) not in (1, 2):
-        raise RuntimeError(f"pendingLineView: expected 1 or 2 `width - 3` truncation budgets, found {len(reserve)}")
+    if len(reserve) != 2:
+        raise RuntimeError(f"pendingLineView: expected 2 `width - 3` truncation budgets, found {len(reserve)}")
     trunc_reserve = reserve[-1]
     gate = [o for o in range(trunc_reserve - 0x40, trunc_reserve, 4)
             if word(o) & 0xFF00001F == 0xB4000001  # cbz x1, other_path (x1 = the status's length)
@@ -2508,26 +2634,13 @@ def _resolve_elapsed_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
     pad_rn = (word(rp - 20) >> 5) & 0x1F
     site("model.(*ConversationModel).pendingLineView -> lay out text, suffix, status even with no status",
          gate[0], NOP)
-    if len(reserve) == 2:
-        site(f"model.(*ConversationModel).pendingLineView -> statusSlot.fit gives {ELAPSED_RESERVE} columns to the suffix",
-             reserve[0], pack((word(reserve[0]) & 0xFFC003FF) | (ELAPSED_RESERVE << 10)))
+    site(f"model.(*ConversationModel).pendingLineView -> statusSlot.fit gives {ELAPSED_RESERVE} columns to the suffix",
+         reserve[0], pack((word(reserve[0]) & 0xFFC003FF) | (ELAPSED_RESERVE << 10)))
     site(f"model.(*ConversationModel).pendingLineView -> the text gives {ELAPSED_RESERVE} columns to the suffix",
          trunc_reserve, pack((word(trunc_reserve) & 0xFFC003FF) | (ELAPSED_RESERVE << 10)))
     site("model.(*ConversationModel).pendingLineView -> padding comes from elapsedSuffix(m, pad)", rp - 16,
          pack(0x9A9FA001 | (pad_rn << 5), _ldr_sp(0, m_slot), 0xAA1F03E2, 0xAA1F03E5)  # csel x1, xPad, xzr, ge; m; x2 = x5 = nil
          + encode_bl(VM_BASE + rp, VM_BASE + cl[0]))
-
-    # 50h. Through v1.5.11, `tbnz w2, #0, short` bypassed the full path when a tip hid the status; v1.5.12+
-    # already zeroes status `(ptr, len)` before `gate[0]`, so turning `gate[0]` into `nop` keeps elapsedSuffix.
-    if len(reserve) == 1:
-        hide, full = gate[0] + 8, gate[0] + 12
-        len_slot, width_slot = _sp_slot(word(gate[0] - 4), 0xF94003E0), _sp_slot(word(full + 4), 0xF94003E0)
-        if (word(hide) & 0xFFF8001F != 0x37000002 or len_slot is None or len_slot[0] != 1  # ldr x1, [sp, #len]; tbnz w2, #0
-                or _sp_slot(word(full), 0xF90003E0) is None or width_slot is None or width_slot[0] != 3):  # str x0; ldr x3, [sp, #width]
-            raise RuntimeError("pendingLineView: the hide-status test or the full path's first loads moved")
-        short = hide + ((((word(hide) >> 5) & 0x3FFF) ^ 0x2000) - 0x2000) * 4
-        site("model.(*ConversationModel).pendingLineView -> a tip hides the status, not the elapsed time", short,
-             pack(_str_sp(31, len_slot[1]), _str_sp(31, width_slot[1])) + encode_b(VM_BASE + short + 8, VM_BASE + full))
     return tuple(sites)
 
 
@@ -2609,7 +2722,7 @@ def _resolve_thinking_sites(data: bytes | bytearray, funcs: dict[str, tuple[int,
         raise RuntimeError("stepContent: the live line's suffix is no longer rendered and appended")
     adrp_add = encode_adrp_add(VM_BASE + load, mark_va, 2)
     if bytes(data[load : load + 8]) != adrp_add:
-        if word(load) & 0xFFFFFFE0 != 0x914023E0 or word(load + 4) & 0xFFC003FF != 0xF9400362 \
+        if word(load) & 0xFFC003FF != 0x914003FB or word(load + 4) & 0xFFC003FF != 0xF9400362 \
                 or word(load + 12) & 0xFFC003FF != 0xF9400363:
             raise RuntimeError("stepContent: the live line no longer loads its `(8s)`")
     site("cot-rendering", "render.stepContent -> the running thought leads with `∴ `, without its own `(8s)`",
@@ -2625,14 +2738,23 @@ def _resolve_thinking_sites(data: bytes | bytearray, funcs: dict[str, tuple[int,
     site("cot-rendering", "render.stepContent -> the mark before the snippet, not the suffix after it",
          cat - 0x18, pack(lit_len, 0xAA0103E2, 0xAA0003E1, word(cat - 0x0C), word(cat - 0x08), lit_ptr))
 
-    # 51f. activityCandidate: `cmp x0, #3; b.eq snippet` -> `cmp x0, #3; nop`; Thinking takes its label.
+    # 51f. activityCandidate: Thinking takes its label, not the thought snippet.
+    # v1.5.14+: `cmp x0, #3; b.ne past` -> `b past` (skips the Thinking snippet branch).
+    # v1.5.13:  `cmp x0, #3; b.eq snippet` -> `nop`.
     ac = funcs["activityCandidate"]
-    three = [o + 4 for o, w in _words(data, (ac[0], ac[1] - 4))
-             if w == 0xF1000C1F and (word(o + 4) & 0xFF00001F == 0x54000000 or bytes(data[o + 4 : o + 8]) == NOP)]
-    if len(three) != 1:
-        raise RuntimeError(f"activityCandidate: expected one Thinking test, found {len(three)}")
-    site("pending-line", "model.(*ConversationModel).activityCandidate -> Thinking shows its label, not the thought",
-         three[0], NOP)
+    three_ne = [o + 4 for o, w in _words(data, (ac[0], ac[1] - 4))
+                if w == 0xF1000C1F and (word(o + 4) & 0xFF00001F == 0x54000001 or word(o + 4) >> 26 == 0x05)]
+    three_eq = [o + 4 for o, w in _words(data, (ac[0], ac[1] - 4))
+                if w == 0xF1000C1F and (word(o + 4) & 0xFF00001F == 0x54000000 or bytes(data[o + 4 : o + 8]) == NOP)]
+    if len(three_ne) == 1 and not three_eq:
+        br = three_ne[0]
+        site("pending-line", "model.(*ConversationModel).activityCandidate -> Thinking shows its label, not the thought",
+             br, encode_b(VM_BASE + br, VM_BASE + branch_target(word(br), br)))
+    elif len(three_eq) == 1 and not three_ne:
+        site("pending-line", "model.(*ConversationModel).activityCandidate -> Thinking shows its label, not the thought",
+             three_eq[0], NOP)
+    else:
+        raise RuntimeError(f"activityCandidate: expected one Thinking test, found ne={len(three_ne)} eq={len(three_eq)}")
 
     # 51g. render.isInFlightThinkingOnly: when showThinking is false (stubbed), itemRenderer.render
     # suppresses any running step that has thought without an answer yet, hiding both #51 and #53 until
@@ -2669,20 +2791,27 @@ def _resolve_verb_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int
     pack = lambda *ws: b"".join(struct.pack("<I", w) for w in ws)
     ac = funcs["activityCandidate"]
     _, _, start_field = _turn_start(data, funcs["refreshActivityLabel"])
-    _, _, at = _gemini_fill(data)
+    _, _, at = _gemini_fill(data, funcs)
 
-    # Stock, after executionStatusLabel: `ldr x0, [sp, #kind]; cmp x0, #3; b.eq snippet` (Site #51f: nop);
-    # `cmp x0, #4; b.eq derive`; `cmp x0, #7; b.ne label` (Site #50c: `b label`); the Compacting branch up
-    # to `derive`. The receiver is spilled at entry: `stp x0, x1, [sp, #m]`.
-    four = [o for o, w in _words(data, (ac[0], ac[1] - 8))
-            if (w == 0xF100101F or bytes(data[o : o + 4]) == encode_b(VM_BASE + o, VM_BASE + o + 16))
+    # Stock: `cmp x0, #4; b.eq derive; cmp x0, #7; ...`.
+    # v1.5.14+: `b.eq compacting; ldr x6, [sp, #m]; b label; <compacting: o4+24 .. derive>`.
+    # v1.5.13:  `b.ne label; <compacting: o4+16 .. derive>`.
+    four = [o for o, w in _words(data, (ac[0], ac[1] - 12))
+            if (w == 0xF100101F or (w >> 26 == 0x05 and branch_target(w, o) in (o + 16, o + 24)))
             and word(o + 8) == 0xF1001C1F]
     if len(four) != 1:
         raise RuntimeError(f"activityCandidate: expected one Running test before the Compacting one, found {len(four)}")
     o4 = four[0]
-    cave = o4 + 16
     m_spill = next((((w >> 15) & 0x7F) * 8 for _, w in _words(data, (ac[0], ac[0] + 0x30)) if w & 0xFFC07FFF == 0xA90007E0), None)
-    label = branch_target(word(o4 + 12), o4 + 12)
+    v14_layout = (word(o4 + 12) & 0xFF00001F == 0x54000000 or bytes(data[o4 + 12 : o4 + 16]) == NOP) and word(o4 + 20) >> 26 == 0x05
+    if v14_layout:
+        cave = o4 + 24
+        label_entry = o4 + 16                      # `ldr x6, [sp, #m]; b label`
+        label = branch_target(word(o4 + 20), o4 + 20)
+    else:
+        cave = o4 + 16
+        label_entry = branch_target(word(o4 + 12), o4 + 12)
+        label = label_entry
     if m_spill is None or label is None:
         raise RuntimeError("activityCandidate: the receiver spill or the label branch moved")
     derive = branch_target(word(o4 + 4), o4 + 4)
@@ -2691,8 +2820,11 @@ def _resolve_verb_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int
         derive = None
     elif derive is None or word(o4 + 4) & 0xFF00001F != 0x54000000:
         raise RuntimeError("activityCandidate: the Running test no longer branches on equal")
-    # The epilogue the label path ends with: `bl AgentState.Label; ldur x29; ldr x30, [sp], #n; ret`.
-    epilogue = [word(label + 0x10 + 4 * i) for i in range(3)]
+    # The epilogue right after `bl AgentState.Label`: `ldur x29; ldr x30, [sp], #n; ret`.
+    lab_calls = _calls_to(data, (label, min(label + 0x20, ac[1])), funcs["agentStateLabel"][0])
+    if len(lab_calls) != 1:
+        raise RuntimeError("activityCandidate: expected one AgentState.Label call on the label path")
+    epilogue = [word(lab_calls[0] + 4 + 4 * i) for i in range(3)]
     if epilogue[2] != 0xD65F03C0 or epilogue[0] != 0xF85F83FD:
         raise RuntimeError("activityCandidate: the label path no longer returns right after the call")
     if start_field >> 24 or (start_field & 0xFFF) > 0xFFF:
@@ -2700,7 +2832,7 @@ def _resolve_verb_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int
     n = len(PENDING_VERBS)
     body = (
         pack(0xD1000801, 0xF100083F)                                # sub x1, x0, #2; cmp x1, #2   (kinds 2-4)
-        + encode_b_cond(VM_BASE + cave + 8, VM_BASE + label, 0x8)   # b.hi label
+        + encode_b_cond(VM_BASE + cave + 8, VM_BASE + label_entry, 0x8)  # b.hi label_entry
         + pack(_ldr_sp(2, m_spill),                                 # x2 = m
                0x91000000 | ((start_field & 0xFFF) << 10) | (2 << 5) | 27,       # add x27, x2, #lo
                0x91400000 | ((start_field >> 12) << 10) | (27 << 5) | 27,         # add x27, x27, #hi, lsl #12
@@ -2717,7 +2849,10 @@ def _resolve_verb_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int
     if not patched:
         if end > derive:
             raise RuntimeError(f"activityCandidate: the dead Compacting branch holds {derive - cave}B, the verb needs {len(body)}B")
-        assert_unreachable(data, ac, (cave, derive), "activityCandidate's Compacting branch")
+        assert_unreachable(
+            data, ac, (cave, derive), "activityCandidate's Compacting branch",
+            ignore=(o4 + 12,) if v14_layout else (),
+        )
     return (
         PatchSite("pending-line", "model.(*ConversationModel).activityCandidate -> past Thinking, go pick the verb",
                   VM_BASE + o4, o4, bytes(data[o4 : o4 + 4]) if not patched else None, encode_b(VM_BASE + o4, VM_BASE + cave)),
@@ -2764,7 +2899,7 @@ TOOL_MARK_FUNCS = ("markTool", "markStatus", "markRunningDot", "markTask", "mark
 
 def _resolve_tool_mark_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
     """Sites #57: `⋆` for `●` and `⊹` for `○` in the transcript's status marks."""
-    _, _, at = _gemini_fill(data)
+    _, _, at = _gemini_fill(data, funcs)
     text_end = _text_tail_cave(data)[0]
     # The circles' addresses, from RunningDot, which loads each once (`○` lit, `●` not). A patched
     # binary loads the marks instead; then every site already reads as patched.
@@ -2774,8 +2909,11 @@ def _resolve_tool_mark_sites(data: bytes | bytearray, funcs: dict[str, tuple[int
         lo, hi = funcs["markRunningDot"]
         for o in range(lo, hi - 8, 4):
             va = _adrp_add_at(data, o, struct.unpack_from("<I", data, o)[0] & 0x1F)
-            if va is not None and (va == at[mark.encode()] or (0 <= va - VM_BASE < text_end
-                                   and bytes(data[va - VM_BASE : va - VM_BASE + 3]) == circle.encode())):
+            if va is not None and (
+                va == at[mark.encode()]
+                or (0 <= va - VM_BASE < text_end and bytes(data[va - VM_BASE : va - VM_BASE + 3]) == circle.encode())
+                or (0 <= va - VM_BASE <= len(data) - 3 and bytes(data[va - VM_BASE : va - VM_BASE + 3]) == mark.encode())
+            ):
                 loads.add(va)
         if len(loads) != 1:
             raise RuntimeError(f"render.RunningDot no longer loads one `{circle}`")
@@ -3423,12 +3561,18 @@ def _resolve_keepalive_sites(
     ret_bytes = bytes.fromhex("c0035fd6")
     sites: list[PatchSite] = []
 
-    # 1. Gateway session affinity: preserve GenerateContentRequest.SessionId in both gateway entrypoints.
+    # 1. Gateway session affinity: preserve GenerateContentRequest.SessionId on gateway requests.
+    # v1.5.14+ shares one helper `buildGatewayHTTPRequest` across both streaming and non-streaming calls.
     set_role_off = funcs["setToolResultRoleToUser"][0]
-    for sym_key, label in (
-        ("StreamGenerateContentFromGateway", "codeassistclient.(*CodeAssistClient).StreamGenerateContentFromGateway"),
-        ("GenerateContentFromGateway", "codeassistclient.(*CodeAssistClient).GenerateContentFromGateway"),
-    ):
+    gw_targets = (
+        (("buildGatewayHTTPRequest", "codeassistclient.(*CodeAssistClient).buildGatewayHTTPRequest"),)
+        if "buildGatewayHTTPRequest" in funcs
+        else (
+            ("StreamGenerateContentFromGateway", "codeassistclient.(*CodeAssistClient).StreamGenerateContentFromGateway"),
+            ("GenerateContentFromGateway", "codeassistclient.(*CodeAssistClient).GenerateContentFromGateway"),
+        )
+    )
+    for sym_key, label in gw_targets:
         calls = _calls_to(data, funcs[sym_key], set_role_off)
         if len(calls) != 1:
             raise RuntimeError(f"{label}: expected 1 call to setToolResultRoleToUser, found {len(calls)}")
@@ -3452,7 +3596,7 @@ def _resolve_keepalive_sites(
             )
         )
 
-    # 2. Route nil FeatureProviderResolver / nil FeatureProvider through modelapiccpa.keepAlivePings.
+    # 2. Route nil FeatureProvider (and nil featureProviderResolver on v1.5.13) through modelapiccpa.keepAlivePings.
     gen_bounds = funcs["ccpaGenerate"]
     kp_bounds = funcs["keepAlivePings"]
     kp_calls = _calls_to(data, gen_bounds, kp_bounds[0])
@@ -3470,13 +3614,9 @@ def _resolve_keepalive_sites(
         o for o in range(gen_bounds[0], kp_call - 12, 4)
         if (word(o) & 0xFF000000) == 0xB5000000 and branch_target(word(o), o) == o + 0x10
     ]
-    if len(cbnz_guards) != 2:
-        raise RuntimeError(f"modelapiccpa.(*Client).Generate: expected 2 cbnz feature-provider guards, found {len(cbnz_guards)}")
-    g1_body, g2_body = cbnz_guards[0] + 4, cbnz_guards[1] + 4
-    g1_patched = (
-        pack(0xAA1F03E0, 0xAA1F03E1)  # mov x0, xzr; mov x1, xzr
-        + encode_b(VM_BASE + g1_body + 8, VM_BASE + g2_body)
-    )
+    if len(cbnz_guards) not in (1, 2):
+        raise RuntimeError(f"modelapiccpa.(*Client).Generate: expected 1 or 2 cbnz feature-provider guards, found {len(cbnz_guards)}")
+    g2_body = cbnz_guards[-1] + 4
     g2_patched = (
         pack(
             0xF90003FF | ((fp_data_sp // 8) << 10),  # str xzr, [sp, #fp_data_sp]
@@ -3484,16 +3624,22 @@ def _resolve_keepalive_sites(
         )
         + encode_b(VM_BASE + g2_body + 8, VM_BASE + kp_call)
     )
-    sites.append(
-        PatchSite(
-            "cache-keepalive",
-            "modelapiccpa.(*Client).Generate -> route nil featureProviderResolver through keepAlivePings",
-            VM_BASE + g1_body,
-            g1_body,
-            stock_or_none(g1_body, g1_patched),
-            g1_patched,
+    if len(cbnz_guards) == 2:
+        g1_body = cbnz_guards[0] + 4
+        g1_patched = (
+            pack(0xAA1F03E0, 0xAA1F03E1)  # mov x0, xzr; mov x1, xzr
+            + encode_b(VM_BASE + g1_body + 8, VM_BASE + g2_body)
         )
-    )
+        sites.append(
+            PatchSite(
+                "cache-keepalive",
+                "modelapiccpa.(*Client).Generate -> route nil featureProviderResolver through keepAlivePings",
+                VM_BASE + g1_body,
+                g1_body,
+                stock_or_none(g1_body, g1_patched),
+                g1_patched,
+            )
+        )
     sites.append(
         PatchSite(
             "cache-keepalive",
@@ -3534,11 +3680,11 @@ def _resolve_keepalive_sites(
     )
 
     # 3b. Preserve full prompt prefix in (*keepAlives).beforeRequest by NOPing `bl trimLastBlock`,
-    # freeing trimLastBlock (608B) in __text as our self-contained leaf helper & rodata cave.
+    # freeing trimLastBlock (608B/832B) in __text as our self-contained leaf helper & rodata cave.
     tlb_start, tlb_end = funcs["trimLastBlock"]
     tlb_sites = [
         o + 4 for o in range(br_bounds[0], br_bounds[1] - 8, 4)
-        if word(o) == 0xAA0103E0  # mov x0, x1
+        if word(o) in (0xAA0103E0, 0xF9001004)  # mov x0, x1 (v1.5.13) / str x4, [x0, #0x20] (v1.5.14+)
         and (branch_target(word(o + 4), o + 4) == tlb_start or bytes(data[o + 4 : o + 8]) == NOP)
         and (_sp_slot(word(o + 8), 0xF94003E0) or (None, None))[0] == 1
     ]
@@ -4007,132 +4153,6 @@ def _resolve_keepalive_sites(
 
     return tuple(sites)
 
-def _resolve_neon_gateway_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
-    """Register Gemini 4 Neon (0x5b9..0x5bc, low..xhigh) in defaultmodels.ModelInfos when geminimodels ships
-    neonDetails without defaultmodels entries (v1.5.12), so Enterprise Gateway LookupModelInfo resolves Neon
-    with its display labels, 1M context window, and thinkingLevel LOW..XHIGH. Retires once defaultmodels has Neon.
-    """
-    word = lambda o: struct.unpack_from("<I", data, o)[0]
-    pack = lambda *ws: b"".join(struct.pack("<I", w) for w in ws)
-    movz = lambda rd, imm: 0xD2800000 | (imm << 5) | rd
-
-    if "Gemini4Neon" in funcs:
-        return ()  # upstream v1.5.13+ registers Gemini 4 Neon natively in defaultmodels.ModelInfos
-    cat = funcs["geminiCatalog"]
-    det_off = funcs["geminiDetails"][0]
-    neon_calls = [
-        o + 8 for o in range(cat[0], cat[1] - 0x30, 4)
-        if word(o) in (movz(0, 0x5B9), movz(0, 0x5BA), movz(0, 0x5BB), movz(0, 0x5BC))
-        and word(o + 8) >> 26 == 0x25
-    ]
-    if not neon_calls:
-        return ()  # pre-v1.5.12 (no Neon in Catalog)
-    neon_targets = {branch_target(word(c), c) for c in neon_calls}
-    if det_off in neon_targets:
-        return ()  # upstream registered Neon in defaultmodels.ModelInfos itself
-    if len(neon_calls) != 4 or len(neon_targets) != 1:
-        raise RuntimeError(f"geminimodels.Catalog: expected 4 calls to neonDetails, found {len(neon_calls)}")
-    neon_det = neon_targets.pop()
-
-    # Extract `"Gemini 4 Neon"` VA from neonDetails, and the 4 `"gemini-4-neon-*"` VAs from Catalog.
-    gmi_calls = _calls_to(data, (neon_det, neon_det + 0x60), funcs["GeminiModelInfo"][0])
-    if len(gmi_calls) != 1:
-        raise RuntimeError("geminimodels.neonDetails no longer calls defaultmodels.GeminiModelInfo once")
-    neon_disp_va = decode_adrp_add(data, gmi_calls[0] - 12)
-    if bytes(data[neon_disp_va - VM_BASE : neon_disp_va - VM_BASE + 13]) != b"Gemini 4 Neon":
-        raise RuntimeError("geminimodels.neonDetails no longer loads 'Gemini 4 Neon'")
-
-    slug_vas: dict[int, tuple[int, int]] = {}
-    expected_slugs = {
-        0x5B9: b"gemini-4-neon-low",
-        0x5BA: b"gemini-4-neon-medium",
-        0x5BB: b"gemini-4-neon-high",
-        0x5BC: b"gemini-4-neon-xhigh",
-    }
-    for c in neon_calls:
-        enum_id = (word(c - 8) >> 5) & 0xFFFF
-        sva = decode_adrp_add(data, c + 0x14)
-        exp = expected_slugs[enum_id]
-        if bytes(data[sva - VM_BASE : sva - VM_BASE + len(exp)]) != exp:
-            raise RuntimeError(f"geminimodels.Catalog: unexpected Neon slug at {hex(VM_BASE + c + 0x14)}")
-        slug_vas[enum_id] = (sva, len(exp))
-
-    sites: list[PatchSite] = []
-    def site(name: str, off: int, patched: bytes) -> None:
-        sites.append(PatchSite("neon-gateway", name, VM_BASE + off, off, _recoverable(data, off, patched), patched))
-
-    # 1. defaultmodels.Gemini36Flash -> Neon ModelInfo builder (levels 1..3 -> 0x5b9..0x5bb, 7 -> 0x5bc).
-    g36 = funcs["Gemini36Flash"]
-    g36_gmi = _calls_to(data, g36, funcs["GeminiModelInfo"][0])
-    if len(g36_gmi) != 1 or g36_gmi[0] - g36[0] < 0x60:
-        raise RuntimeError("defaultmodels.Gemini36Flash: unexpected layout before GeminiModelInfo")
-    b_off = g36_gmi[0] - 0x48
-    err_off = g36_gmi[0] + 0x18
-    b_va = VM_BASE + b_off
-    builder = (
-        pack(0x51000443, 0x7100087F, 0x5280B704, 0x0B020084)           # sub w3, w2, #1; cmp w3, #2; mov w4, #0x5b8; add w4, w4, w2
-        + encode_b_cond(b_va + 0x10, b_va + 0x2C, 0x9)                 # b.ls +0x1c (to +0x2c)
-        + pack(0x71001C5F)                                             # cmp w2, #7
-        + encode_b_cond(b_va + 0x18, VM_BASE + err_off, 0x1)           # b.ne unsupportedThinkingLevel
-        + pack(movz(4, 0x5BC))                                         # mov x4, #0x5bc
-        + NOP * 4                                                      # pad +0x20..+0x2c
-        + pack(0xAA0203E5, 0xAA0003E2, 0xAA0103E3)                     # mov x5, x2; mov x2, x0; mov x3, x1
-        + encode_adrp_add(b_va + 0x3C, neon_disp_va, 0)                # x0 = "Gemini 4 Neon"
-        + pack(movz(1, 13))                                            # x1 = 13
-    )
-    assert len(builder) == 0x48
-    site("defaultmodels.Gemini36Flash -> build Gemini 4 Neon (Low..XHigh) ModelInfo", b_off, builder)
-
-    # 2. defaultmodels.init -> populate the 4 Neon efforts in the 3.6 Flash (high, med, low) + 3.7 Flash low slots.
-    dinit = funcs["defaultmodelsInit"]
-    c36 = _calls_to(data, dinit, g36[0])
-    c37 = _calls_to(data, dinit, funcs["Gemini37Flash"][0])
-    if len(c36) == 3 and len(c37) >= 1:
-        donors = [*c36, c37[0]]
-    elif len(c36) == 4:
-        donors = c36
-    else:
-        raise RuntimeError(f"defaultmodels.init: unexpected Gemini36Flash/37Flash call counts ({len(c36)}, {len(c37)})")
-
-    for call_off, enum_id, label in zip(donors[:3], (0x5BB, 0x5BA, 0x5B9), ("high", "medium", "low")):
-        sva, slen = slug_vas[enum_id]
-        arg_off = call_off - 16
-        patched = encode_adrp_add(VM_BASE + arg_off, sva, 0) + pack(movz(1, slen))
-        site(f"defaultmodels.init -> register gemini-4-neon-{label} in ModelInfos", arg_off, patched)
-
-    xh_call = donors[3]
-    xh_off = xh_call - 16
-    xh_sva, xh_slen = slug_vas[0x5BC]
-    xh_patched = (
-        encode_adrp_add(VM_BASE + xh_off, xh_sva, 0)
-        + pack(movz(1, xh_slen), 0xB2400BE2)                           # orr x2, xzr, #7 (XHigh)
-        + encode_bl(VM_BASE + xh_call, VM_BASE + g36[0])
-    )
-    site("defaultmodels.init -> register gemini-4-neon-xhigh in ModelInfos", xh_off, xh_patched)
-
-    # 3. geminimodels.Catalog -> skip the 4 contiguous retired Flash donor entries (`3.6-flash-{low,medium,high}`,
-    # `3.7-flash-low`) so Catalog neither panics on their missing ModelInfos nor collides with Neon's 0x5b9..0x5bc enums.
-    det_calls = _calls_to(data, cat, det_off)
-    def cat_entry(key_bytes: bytes) -> int:
-        matches = [
-            d - 4 for d in det_calls
-            if word(d + 0x40) & 0x9F00001F == 0x90000002
-            and word(d + 0x48) == movz(3, len(key_bytes))
-            and bytes(data[decode_adrp_add(data, d + 0x40) - VM_BASE :][: len(key_bytes)]) == key_bytes
-        ]
-        if len(matches) != 1:
-            raise RuntimeError(f"geminimodels.Catalog: expected 1 details() entry for {key_bytes.decode()}, found {len(matches)}")
-        return matches[0]
-
-    skip_from = cat_entry(b"gemini-3.6-flash-low")
-    skip_to = cat_entry(b"gemini-3.7-flash-medium")
-    if not (skip_from < cat_entry(b"gemini-3.6-flash-medium") < cat_entry(b"gemini-3.6-flash-high") < cat_entry(b"gemini-3.7-flash-low") < skip_to):
-        raise RuntimeError("geminimodels.Catalog: retired Flash donor entries are no longer contiguous before 3.7-flash-medium")
-    site("geminimodels.Catalog -> skip retired 3.6 Flash / 3.7 Flash Low donor entries", skip_from,
-         encode_b(VM_BASE + skip_from, VM_BASE + skip_to))
-
-    return tuple(sites)
-
 
 def _resolve_prompt_template_sites(data: bytes | bytearray, version: str, strict: bool) -> tuple[PatchSite, ...]:
     """Templates that templates/v<version>/system_prompts/ changes from stock (see prompt_templates.py)."""
@@ -4157,7 +4177,6 @@ def _resolve_groups(data: bytes | bytearray, version: str, strict: bool) -> dict
             out[name] = exc
 
     run("context-window", lambda: _resolve_context_window_sites(data, funcs))
-    run("neon-gateway", lambda: _resolve_neon_gateway_sites(data, funcs))
     # -> (pre, post, nl3_va, sticky_cave). Site #29's dead span holds the color-scheme matcher (Site #47).
     run("palette-typography", lambda: _resolve_palette_and_typography_sites(data, funcs))
     cave = lambda: out["palette-typography"][3]
@@ -4202,7 +4221,7 @@ def resolve_patch_sites(data: bytes | bytearray, version: str, strict: bool = Fa
     pal_pre, pal_post, _, _ = out["palette-typography"]
     cot_step_sites, cot_strip_site = out["cot-rendering"]
     return (
-        *out["context-window"], *out["neon-gateway"], *cot_step_sites, *pal_pre, out["statusline-refresh"], *pal_post, cot_strip_site,
+        *out["context-window"], *cot_step_sites, *pal_pre, out["statusline-refresh"], *pal_post, cot_strip_site,
         *out["tool-monitors"], *out["color-scheme"], *out["command-elbow"], *out["spinner"],
         *out["pending-line"], *out["pending-verbs"], *out["tool-marks"], *out["code-theme"], *out["live-thinking"], *out["thought-grouping"], *out["thought-block"],
         *out["cache-keepalive"],

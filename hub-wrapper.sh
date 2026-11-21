@@ -35,7 +35,7 @@ fi
 
 # Local gateway settings (CLIProxyAPI). Built-in catalog IDs keep "(Low|Medium|High|XHigh)"
 # labels for effort gauges and send base model + thinkingConfig.thinkingLevel on the wire.
-# Routing via AGY_LLM_GATEWAY_* keeps sessions on modelapiccpa -> StreamGenerateContentFromGateway,
+# Routing via AGY_LLM_GATEWAY_* keeps sessions on modelapiccpa -> buildGatewayHTTPRequest,
 # unifying local gateway sessions with Google's native 4m30s prompt-cache keepalive engine.
 use_local_gateway() {
   local gateway_env=$HOME/.gemini/agy-gateway.env

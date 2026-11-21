@@ -178,10 +178,6 @@ def section_source(body: str, data: bytes, tmpl_lines: list[str]) -> str:
     return " + ".join(k for k in ("template", "Go", "dynamic") if sizes.get(k, 0) / total >= 0.05) or "template"
 
 
-def approx_tokens(chars: int) -> int:
-    return round(chars / 4)  # English-heavy prompt text averages ~4 chars per token
-
-
 def withhold_rules(text: str) -> str:
     """Hide the user's own rules: PROMPT.md gets committed and shared. Reported sizes still count them."""
     return RULES_RE.sub(RULES_MARK, text)
