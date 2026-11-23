@@ -336,7 +336,8 @@ def run_tui(binary: Path, out: Path, settings: dict) -> None:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("AGY_", "GEMINI_", "GOOGLE_"))}
     env.update(
         GEMINI_API_KEY="probe", GOOGLE_GEMINI_BASE_URL=f"http://127.0.0.1:{server.server_port}",
-        AGY_CLI_DISABLE_AUTO_UPDATE="true", TERM="xterm-256color", COLORTERM="truecolor",
+        AGY_CLI_DISABLE_AUTO_UPDATE="true", AGY_CLI_AUTO_COMPACT_OVERRIDE="512K",
+        TERM="xterm-256color", COLORTERM="truecolor",
     )
     argv = [str(binary), f"--app_data_dir={_state_subdir(state_dir)}", "--settings", json.dumps(settings)]
     fd, slave_fd = os.openpty()
@@ -599,7 +600,6 @@ def run_live_probe(binary: Path) -> tuple[bool, str]:
     settings = {
         "modelProvider": "",
         "model": "gemini-4-hydrogen-high",
-        "contextWindow": "512K",
         "verbosity": "high",
         "showThinking": False,
         "showTips": False,
@@ -610,6 +610,7 @@ def run_live_probe(binary: Path) -> tuple[bool, str]:
         TERM="xterm-256color",
         COLORTERM="truecolor",
         AGY_CLI_DISABLE_AUTO_UPDATE="true",
+        AGY_CLI_AUTO_COMPACT_OVERRIDE="512K",
         AGY_LLM_GATEWAY_URL=f"http://127.0.0.1:{server.server_port}",
         AGY_LLM_GATEWAY_API_KEY="probe",
         AGY_LLM_GATEWAY_WIRE_PROTOCOL="genai",
@@ -677,6 +678,11 @@ def run_live_probe(binary: Path) -> tuple[bool, str]:
         pump(1.5)
         light_dump = screen.dump()
         osc_after = osc_count[0]
+
+        # /context shows native Auto-compact override from AGY_CLI_AUTO_COMPACT_OVERRIDE=512K
+        os.write(fd, b"/context\r")
+        pump(2.0)
+        context_dump = screen.dump()
     finally:
         for _ in range(2):
             try:
@@ -705,8 +711,10 @@ def run_live_probe(binary: Path) -> tuple[bool, str]:
         ts, touches, left, st = v & 0x3FFFFFFFF, (v >> 34) & 0xFF, (v >> 42) & 0xFF, (v >> 50) & 0x3
         if not (st == 1 and left == 12 and touches == 0 and ts > 1_700_000_000):
             failures.append(f"unexpected cache_keepalive=(state={st}, left={left}, touches={touches}, ts={ts})")
-    if not any(j.get("context_window", {}).get("context_window_size") == 512000 for j in sl_lines):
-        failures.append("StatusLineData context_window_size != 512000")
+    if not any(j.get("context_window", {}).get("context_window_size", 0) >= 1_000_000 for j in sl_lines):
+        failures.append("StatusLineData context_window_size < 1M")
+    if "Auto-compact at 512" not in context_dump or "AGY_CLI_AUTO_COMPACT_OVERRIDE=512K" not in context_dump:
+        failures.append("/context missing native Auto-compact 512K override row")
     if "\x1b[?2031h" not in raw_text or osc_after <= osc_before or "bg=237" not in turn1_dump or "bg=254" not in light_dump:
         failures.append(f"DEC 2031 switch failed (2031h={'\x1b[?2031h' in raw_text}, osc={osc_before}->{osc_after}, dark237={'bg=237' in turn1_dump}, light254={'bg=254' in light_dump})")
     if "∴ Thought for" not in turn1_dump or "Checking probe" not in turn1_dump or "Hidden while folded." in turn1_dump or "25 tokens" in turn1_dump:
@@ -716,7 +724,7 @@ def run_live_probe(binary: Path) -> tuple[bool, str]:
 
     if failures:
         return False, "; ".join(failures)
-    return True, "SessionId, keepalive(state=1,left=12), 512K, DEC 2031 (237->254), /thinking off|on orthogonal"
+    return True, "SessionId, keepalive(state=1,left=12), 512K auto-compact, DEC 2031 (237->254), /thinking off|on orthogonal"
 
 
 def rehearse(stock: Path | None, old: Path | None, workdir: Path | None, no_tui: bool) -> int:
@@ -825,7 +833,7 @@ def rehearse(stock: Path | None, old: Path | None, workdir: Path | None, no_tui:
         return finish()
     try:
         patch_agy.apply_patch(old_bin)
-        settings = {"modelProvider": "gemini", "model": "Gemini 4 Hydrogen (High)", "contextWindow": "512K", "showTips": False}
+        settings = {"modelProvider": "gemini", "model": "Gemini 4 Hydrogen (High)", "showTips": False}
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             f_old = pool.submit(run_tui, old_bin, workdir / "screens-old", settings)
             f_new = pool.submit(run_tui, new_bin, workdir / "screens-new", settings)
@@ -879,7 +887,7 @@ def main() -> int:
         return 0
     version = subprocess.run([str(args.binary), "--version"], capture_output=True, text=True).stdout.strip()
     out = args.out or capture_prompt.REPO / ".cache/probe" / f"v{version}"
-    settings = {"modelProvider": "gemini", "model": "Gemini 4 Hydrogen (High)", "contextWindow": "512K", "showTips": False, **args.settings}
+    settings = {"modelProvider": "gemini", "model": "Gemini 4 Hydrogen (High)", "showTips": False, **args.settings}
     run_tui(args.binary, out, settings)
     print(f"wrote {out}")
     return 1 if args.against and diff_snapshots(args.against, out) else 0

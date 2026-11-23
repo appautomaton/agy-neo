@@ -96,19 +96,6 @@
  "model.(*ConversationModel).stickyPromptItem -> 1-line sticky header threshold": [
   "c2b3a795669471d6"
  ],
- "model.ContextModel.collectStats -> effective context window in /context": [
-  "9229990291334ba4"
- ],
- "model.SelectorModel.offersContextWindow -> admit Gemini 4 *": [
-  "41c0847c9e19ecd8",
-  "6a5620591f2c3e7c"
- ],
- "model.SelectorModel.offersContextWindow -> return true": [
-  "11b1de4386a362bb"
- ],
- "model.SelectorModel.offersContextWindow -> whitelist miss enters extra-model matcher": [
-  "6e0a0312dc758aed"
- ],
  "model.compactingLabel -> elapsedSuffix(m, pad): ` (8s ⋅ thinking)`, faint, of the time since the start": [
   "2a39830d19abab52"
  ],
@@ -414,18 +401,6 @@
  "store.(*Manager).userInputLoop -> 15s idle statusline refresh": [
   "e0487ca4a5699246"
  ],
- "store.(*Store).ContextWindow -> (*Store).ContextWindowChoice": [
-  "aa5cb9fbff285b38"
- ],
- "store.(*Store).ContextWindow -> admit Gemini 4 *": [
-  "174eda55fe15179e"
- ],
- "store.(*Store).ContextWindow -> whitelist miss enters extra-model matcher": [
-  "6e0a0312dc758aed"
- ],
- "store.(*Store).ModelMaxTokens -> effective context window limit resolver": [
-  "62f795c325abe189"
- ],
  "store.(*textDrip).flush -> nil next step: the same question": [
   "2ac4072cf4eaf252"
  ],
@@ -434,15 +409,6 @@
  ],
  "store.(*textDrip).flush -> skip the verbose log; empty answer: hand over the thinking step": [
   "b67db4379fb82814"
- ],
- "store.BuildStatusLineData -> actual API input + cache_read numerator": [
-  "c622ace3e4118710"
- ],
- "store.BuildStatusLineData -> disable exceeds_200k_tokens false alarm": [
-  "74d738957d65d910"
- ],
- "store.BuildStatusLineData -> effective context window denominator": [
-  "6a5f64d12d2609b5"
  ],
  "store.BuildStatusLineData -> populate StatusLineData.CacheKeepalive from in-process telemetry": [
   "7db5b4a2d055855e"

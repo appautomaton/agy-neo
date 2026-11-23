@@ -13,7 +13,7 @@ local NOW=$EPOCHREALTIME
 integer NOW_SEC=${EPOCHSECONDS:-${NOW%.*}}
 
 # ─── 1. Single-Pass jq Extraction (ASCII \x1f Unit Separator) ─────────────────
-local SESSION_ID STATE CYCLE_MODE PERM_MODE MODEL_ID MODEL_DISPLAY EFFORT CWD TRANSCRIPT_PATH BRANCH DIRTY SBX_ON USED_PCT TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K COST_USD SUB_USD QUOTA_PCT SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING CACHE_PACKED
+local SESSION_ID STATE CYCLE_MODE PERM_MODE MODEL_ID MODEL_DISPLAY EFFORT CWD TRANSCRIPT_PATH BRANCH DIRTY SBX_ON RAW_USED_PCT WIN_SZ TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K COST_USD SUB_USD QUOTA_PCT SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING CACHE_PACKED
 
 jq -r '
   [
@@ -29,15 +29,8 @@ jq -r '
     (.vcs.branch // .vcs.client // "" | tostring),
     (if .vcs.dirty == true then "true" else "false" end),
     (if .sandbox.enabled == true then "true" else "false" end),
-    (
-      ((.context_window.current_usage.input_tokens // 0 | tonumber? // 0) + (.context_window.current_usage.cache_read_input_tokens // 0 | tonumber? // 0)) as $real_in |
-      (.context_window.context_window_size // 0 | tonumber? // 0) as $win_sz |
-      if ($real_in > 0 and $win_sz > 0) then
-        ($real_in * 100.0 / $win_sz)
-      else
-        (.context_window.used_percentage // 0 | tonumber? // 0)
-      end
-    ),
+    (.context_window.used_percentage // 0 | tonumber? // 0),
+    (.context_window.context_window_size // 0 | tonumber? // 0),
     (.context_window.total_input_tokens // 0 | tonumber? // 0),
     (.context_window.total_output_tokens // 0 | tonumber? // 0),
     (.context_window.current_usage.input_tokens // 0 | tonumber? // 0),
@@ -61,7 +54,7 @@ jq -r '
   ] | map(tostring) | join("\u001f")
 ' 2>/dev/null | IFS=$'\x1f' read -r \
   SESSION_ID STATE CYCLE_MODE PERM_MODE MODEL_ID MODEL_DISPLAY EFFORT CWD TRANSCRIPT_PATH BRANCH DIRTY SBX_ON \
-  USED_PCT TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K \
+  RAW_USED_PCT WIN_SZ TOT_IN TOT_OUT CUR_IN CUR_OUT CACHE_READ EXCEEDS_200K \
   COST_USD SUB_USD QUOTA_PCT \
   SUB_TOT SUB_RUN TASKS ARTIFACTS PENDING_IN CONFIRM_PENDING CACHE_PACKED || exit 0
 
@@ -608,8 +601,53 @@ else
 fi
 
 # ─── 10. Atomic Block 5: Context Window % (Pastel Buttercream / Peach / Rose) ─
+# Load agy-neo.conf once (0 forks) for both auto-compact window and keepalive policy.
+local NEO_CONF="${AGY_NEO_CONFIG:-${HOME}/.gemini/antigravity-cli/agy-neo.conf}"
+local CACHE_KEEPALIVE="on" CACHE_TTL="5m" CACHE_MAX_TOUCHES="4" AUTO_COMPACT_WINDOW="512K"
+[[ -r "$NEO_CONF" ]] && source "$NEO_CONF" 2>/dev/null || true
+
+parse_window_tokens() {
+  local raw="${${1:-}:l}" cap="${2:-0}"
+  raw="${raw//[[:space:]]/}"
+  integer out=0
+  if [[ -z "$raw" || "$raw" == (0|false|off|no|default) ]]; then
+    REPLY=$cap
+    return
+  elif [[ "$raw" == <->% || "$raw" == <->.<->% ]]; then
+    local pct="${raw%%%}"
+    if (( cap > 0 && pct > 0 && pct <= 100 )); then
+      out=$(( cap * pct / 100.0 ))
+    fi
+  elif [[ "$raw" == <->k || "$raw" == <->.<->k ]]; then
+    out=$(( ${raw%k} * 1000.0 ))
+  elif [[ "$raw" == <->m || "$raw" == <->.<->m ]]; then
+    out=$(( ${raw%m} * 1000000.0 ))
+  elif [[ "$raw" == <-> ]]; then
+    out=$raw
+  fi
+  (( out <= 0 )) && out=$cap
+  (( cap > 0 && out > cap )) && out=$cap
+  REPLY=$out
+}
+
+local COMPACT_SPEC="$AUTO_COMPACT_WINDOW"
+[[ -n "${AGY_CLI_AUTO_COMPACT_OVERRIDE+x}" ]] && COMPACT_SPEC="$AGY_CLI_AUTO_COMPACT_OVERRIDE"
+integer REPLY=0
+parse_window_tokens "$COMPACT_SPEC" "$WIN_SZ"
+integer EFF_WIN=$REPLY
+integer REAL_IN=$(( CUR_IN + CACHE_READ ))
+float USED_PCT=0
+if (( REAL_IN > 0 && EFF_WIN > 0 )); then
+  USED_PCT=$(( REAL_IN * 100.0 / EFF_WIN ))
+else
+  USED_PCT=$RAW_USED_PCT
+fi
+
+integer WARN_200K=0
+[[ "$EXCEEDS_200K" == "true" ]] && (( EFF_WIN > 0 && EFF_WIN <= 200000 )) && WARN_200K=1
+
 local CTX_BG="$P_YELLOW"
-if [[ "$EXCEEDS_200K" == "true" ]] || (( USED_PCT >= 80 )); then
+if (( WARN_200K || USED_PCT >= 80 )); then
   CTX_BG="$P_ROSE"
 elif (( USED_PCT >= 50 )); then
   CTX_BG="$P_PEACH"
@@ -621,7 +659,7 @@ if (( USED_PCT >= 10 )); then
 else
   printf -v PCT_FMT "%.1f%%" $USED_PCT
 fi
-[[ "$EXCEEDS_200K" == "true" ]] && PCT_FMT+="!200k"
+(( WARN_200K )) && PCT_FMT+="!200k"
 SEG_BG+=("$CTX_BG")
 SEG_TXT+=("${NF_CHIP} ${B}${PCT_FMT}${NB}")
 
@@ -655,10 +693,6 @@ parse_duration_sec() {
     REPLY=$fallback
   fi
 }
-
-local NEO_CONF="${AGY_NEO_CONFIG:-${HOME}/.gemini/antigravity-cli/agy-neo.conf}"
-local CACHE_KEEPALIVE="on" CACHE_TTL="5m" CACHE_MAX_TOUCHES="4"
-[[ -r "$NEO_CONF" ]] && source "$NEO_CONF" 2>/dev/null || true
 
 local KEEPALIVE_RAW="${AGY_CACHE_KEEPALIVE:-$CACHE_KEEPALIVE}"
 integer KEEPALIVE_ON=1

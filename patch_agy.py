@@ -34,12 +34,7 @@ LC_SEGMENT_64 = 0x19
 GOPCLN_MAGIC_120 = 0xFFFFFFF1
 
 TARGET_SYMBOLS: dict[str, str] = {
-    "ModelMaxTokens": "google3/third_party/jetski/cli/store/store.(*Store).ModelMaxTokens",
-    "ContextWindowChoice": "google3/third_party/jetski/cli/store/store.(*Store).ContextWindowChoice",
-    "ContextWindow": "google3/third_party/jetski/cli/store/store.(*Store).ContextWindow",
     "BuildStatusLineData": "google3/third_party/jetski/cli/store/store.BuildStatusLineData",
-    "collectStats": "google3/third_party/jetski/cli/model/model.ContextModel.collectStats",
-    "offersContextWindow": "google3/third_party/jetski/cli/model/model.SelectorModel.offersContextWindow",
     "stepContent": "google3/third_party/jetski/cli/render/render.stepContent",
     "stripMarkdownFormatting": "google3/third_party/jetski/cli/render/render.stripMarkdownFormatting",
     "renderUserPrompt": "google3/third_party/jetski/cli/render/render.renderUserPrompt",
@@ -59,7 +54,6 @@ TARGET_SYMBOLS: dict[str, str] = {
     "applyFeatureProviderCheckpointOverrideConfig": "google3/third_party/jetski/cortex/config/config.applyFeatureProviderCheckpointOverrideConfig",
     "getMaxTokensForStep": "google3/third_party/jetski/cortex/chatconverters/chatconverters.(*TrajectoryChatConverter).getMaxTokensForStep",
     "stepToMessage": "google3/third_party/oneharness/internal/core/serializers/serializers.DefaultSerializer.stepToMessage",
-    "memequal": "runtime.memequal",
     "rendererStart": "google3/third_party/golang/charm_land/bubbletea/v/v2/tea.(*cursedRenderer).start",
     "rendererClose": "google3/third_party/golang/charm_land/bubbletea/v/v2/tea.(*cursedRenderer).close",
     "rendererFlush": "google3/third_party/golang/charm_land/bubbletea/v/v2/tea.(*cursedRenderer).flush",
@@ -145,33 +139,6 @@ OPTIONAL_SYMBOLS: dict[str, str] = {
     "GenerateContentFromGateway": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*CodeAssistClient).GenerateContentFromGateway",
 }
 
-# 1M-window models that upstream `backend.ContextWindowSelectable` (["Gemini 4 Argon"]) omits. Sites
-# #1a-#2b admit every base name with this prefix (Carbon, Hydrogen); it must fit their 16-byte slot.
-CONTEXT_WINDOW_EXTRA_FAMILY = b"Gemini 4 "
-
-# Self-contained 140-byte ARM64 leaf resolver placed in store.(*Store).ModelMaxTokens.
-# The `ldr x6, [sp, #imm]` loads at +0x0 (for `store.BuildStatusLineData`: 0x338 in v1.5.0-v1.5.2, 0x348 in v1.5.3+)
-# and at +0x78 (for `model.ContextModel.collectStats`: 0x128 in v1.5.0-v1.5.3, 0x140 in v1.5.5+) are synthesized dynamically,
-# and so are the `s.settings` (+0x10 through v1.5.5, +0x0 in v1.5.6) and `.ContextWindow` loads at core +24 and +32.
-MODEL_MAX_TOKENS_PATCHED_CORE = bytes.fromhex(
-    "e10304aa074888d2e701a0f29f00076bcb010054a60100b4c60840f9"
-    "660100b4c61c47a9ff1000f101010054c7004039ffc80071c0000054ffd40071"
-    "e0000054ffe4007100010054c0035fd601009dd26100a0f2c0035fd601009ad2"
-    "e100a0f2c0035fd6017497d2a101a0f2c0035fd6e8031eaa"
-)
-MODEL_MAX_TOKENS_PATCHED_EPILOGUE = bytes.fromhex("e10304aae2ffff97e00301aa00015fd6")
-MODEL_MAX_TOKENS_ORIG_HEAD = bytes.fromhex(
-    "900b40f9ff6330eb69040054fe0f1ef8fd831ff8fd2300d1e11b00f9033440f9"
-    "830000b4e10b03a9631040a907000014e0031faafd835ff8fe0742f8c0035fd6"
-    "63800291840400d19f0000f12dffff54601442a95f0005eb41ffff54e48f00a9"
-    "e20305aa"
-)
-MODEL_MAX_TOKENS_ORIG_TAIL = bytes.fromhex(
-    "00010036e30b40f9606080b91f000071ecfdff54e10b43a9"
-    "e40740f9efffff17e10b43a9"
-)
-
-
 class PatchSite(NamedTuple):
     domain: str
     name: str
@@ -204,7 +171,6 @@ AGY_NEO_CONF_TARGET = HOME / ".gemini/antigravity-cli/agy-neo.conf"
 SETTINGS_PATH = HOME / ".gemini/antigravity-cli/settings.json"
 CACHE_DIR = REPO / ".cache"
 META_CACHE_PATH = CACHE_DIR / "binary_meta.json"
-VALID_PRESETS = ("Default", "256K", "512K", "900K")
 
 
 def _load_meta_cache() -> dict:
@@ -296,56 +262,12 @@ def encode_b_eq(pc_va: int, target_va: int) -> bytes:
     return struct.pack("<I", 0x54000000 | (((delta // 4) & 0x7FFFF) << 5))
 
 
-COND_LO = 0x3
-
-
 def encode_b_cond(pc_va: int, target_va: int, cond: int) -> bytes:
     """Encode a 32-bit ARM64 PC-relative `b.<cond>` instruction."""
     delta = target_va - pc_va
     if delta % 4 != 0:
         raise ValueError(f"Unaligned b.cond target: {hex(pc_va)} -> {hex(target_va)}")
     return struct.pack("<I", 0x54000000 | (((delta // 4) & 0x7FFFF) << 5) | cond)
-
-
-def encode_tbz_w0_bit0(pc_va: int, target_va: int) -> bytes:
-    """Encode `tbz w0, #0, target` (branch when a returned Go bool is false)."""
-    delta = target_va - pc_va
-    if delta % 4 != 0:
-        raise ValueError(f"Unaligned tbz target: {hex(pc_va)} -> {hex(target_va)}")
-    return struct.pack("<I", 0x36000000 | (((delta // 4) & 0x3FFF) << 5))
-
-
-def decode_tbnz_target(data: bytes | bytearray, off: int, label: str) -> int:
-    """Decode the target VA of a 64-bit-register `tbnz` (0xB7000000) at file offset `off`."""
-    (insn,) = struct.unpack_from("<I", data, off)
-    if (insn & 0xFF000000) != 0xB7000000:
-        raise RuntimeError(f"Expected tbnz for {label} at {hex(VM_BASE + off)}, got {hex(insn)}")
-    imm14 = (insn >> 5) & 0x3FFF
-    if imm14 & (1 << 13):
-        imm14 -= 1 << 14
-    return (VM_BASE + off) + (imm14 << 2)
-
-
-def build_selectable_matcher(stub_va: int, len_reg: int, hit_va: int, miss_va: int, memequal_va: int) -> bytes:
-    """44 bytes: `goto name.startswith(CONTEXT_WINDOW_EXTRA_FAMILY) ? hit : miss`, with name in (x0, x<len_reg>).
-
-    Seven instructions followed by the NUL-padded literal they compare against. The call mirrors
-    the whitelist loop's own `runtime.memequal(x0, x1, x2)`; every register it clobbers is reloaded
-    on both exits.
-    """
-    n = len(CONTEXT_WINDOW_EXTRA_FAMILY)
-    if n > 16:
-        raise ValueError(f"CONTEXT_WINDOW_EXTRA_FAMILY exceeds its 16-byte literal slot: {n} bytes")
-    code = (
-        struct.pack("<I", 0xF100001F | (n << 10) | (len_reg << 5))  # cmp x<len_reg>, #n
-        + encode_b_cond(stub_va + 4, miss_va, COND_LO)
-        + encode_adr(stub_va + 8, stub_va + 28, 1)  # x1 = literal
-        + struct.pack("<I", 0xD2800002 | (n << 5))  # mov x2, #n
-        + encode_bl(stub_va + 16, memequal_va)
-        + encode_tbz_w0_bit0(stub_va + 20, miss_va)
-        + encode_b(stub_va + 24, hit_va)
-    )
-    return code + CONTEXT_WINDOW_EXTRA_FAMILY.ljust(16, b"\x00")
 
 
 def decode_branch_target(data: bytes | bytearray, off: int, expected_opcode: int, label: str) -> int:
@@ -506,165 +428,17 @@ def assert_unreachable(
             raise RuntimeError(f"{label}: {hex(VM_BASE + off)} branches into it at {hex(VM_BASE + target)}")
 
 
-def resolve_build_statusline_store_sp_imm12(data: bytes | bytearray, func_bounds: tuple[int, int]) -> int:
-    """Extract the 12-bit unsigned stack offset from `str x0, [sp, #imm]` in BuildStatusLineData's prologue."""
-    start, end = func_bounds
-    for off in range(start, min(start + 64, end), 4):
-        (insn,) = struct.unpack_from("<I", data, off)
-        if (insn & 0xFFC003FF) == 0xF90003E0:
-            return (insn >> 10) & 0xFFF
-    raise RuntimeError(f"Prologue `str x0, [sp, #imm]` not found in BuildStatusLineData at {hex(start)}")
-
-
-def resolve_collect_stats_store_sp_imm12(data: bytes | bytearray, func_bounds: tuple[int, int]) -> int:
-    """Extract the 12-bit unsigned stack offset from `str x3, [sp, #imm]` in ContextModel.collectStats."""
-    start, end = func_bounds
-    for off in range(start, min(start + 0x120, end), 4):
-        (insn,) = struct.unpack_from("<I", data, off)
-        if (insn & 0xFFC003FF) == 0xF90003E3:
-            return (insn >> 10) & 0xFFF
-    raise RuntimeError(f"`str x3, [sp, #imm]` not found in ContextModel.collectStats at {hex(start)}")
-
-
-def resolve_settings_context_window_loads(
-    data: bytes | bytearray, func_bounds: tuple[int, int]
-) -> tuple[bytes, bytes]:
-    """Return the resolver's `ldr x6, [x6, #settings]` and `ldp x6, x7, [x6, #ContextWindow]`.
-
-    `(*Store).ContextWindowChoice` reads `s.settings.ContextWindow` with `ldr x2, [x0, #a]; cbz x2;
-    ldp x0, x1, [x2, #b]`. The resolver walks the same chain from x6, so it takes `a` and `b` from
-    there: v1.5.6 moved `settings` from +0x10 to +0x0.
-    """
-    start, _ = func_bounds
-    ldr, ldp = struct.unpack_from("<I", data, start + 0x18)[0], struct.unpack_from("<I", data, start + 0x20)[0]
-    ldp_x_any_offset, ldp_x0_x1_x2 = 0xFFC07FFF, 0xA9400440
-    if ldr & LDR_X_ANY_OFFSET != ldr_x(2, 0) or ldp & ldp_x_any_offset != ldp_x0_x1_x2:
-        raise RuntimeError(f"ContextWindowChoice no longer reads s.settings.ContextWindow as expected at {hex(start)}")
-    ldr_x6 = (ldr & ~0x3FF) | (6 << 5) | 6
-    ldp_x6_x7 = (ldp & ~0x7FFF) | (7 << 10) | (6 << 5) | 6
-    return struct.pack("<I", ldr_x6), struct.pack("<I", ldp_x6_x7)
-
-
 def _resolve_context_window_sites(
     data: bytes | bytearray, funcs: dict[str, tuple[int, int]]
 ) -> tuple[PatchSite, ...]:
-    """Sites #1-#7, #1a-#2b & #7a-#7d: Context window presets (`256K`/`512K`/`900K`), Cortex checkpointer unlock, and statusline accounting."""
-    mmt_off, _ = funcs["ModelMaxTokens"]
-    mmt_va = VM_BASE + mmt_off
-    choice_off, _ = funcs["ContextWindowChoice"]
-    choice_va = VM_BASE + choice_off
+    """Sites #7a-#7d: Remove Cortex 256K checkpointer ceilings and 64K USER_INPUT step clamps.
 
-    bs_sp_imm12 = resolve_build_statusline_store_sp_imm12(data, funcs["BuildStatusLineData"])
-    cs_sp_imm12 = resolve_collect_stats_store_sp_imm12(data, funcs["collectStats"])
-    bs_ldr_x5 = struct.pack("<I", 0xF94003E5 | (bs_sp_imm12 << 10))
-    bs_ldr_x6 = struct.pack("<I", 0xF94003E6 | (bs_sp_imm12 << 10))
-    cs_ldr_x6 = struct.pack("<I", 0xF94003E6 | (cs_sp_imm12 << 10))
-    mmt_core = bytearray(MODEL_MAX_TOKENS_PATCHED_CORE)
-    mmt_core[24:28], mmt_core[32:36] = resolve_settings_context_window_loads(data, funcs["ContextWindowChoice"])
-    mmt_patched = bs_ldr_x6 + mmt_core + cs_ldr_x6 + MODEL_MAX_TOKENS_PATCHED_EPILOGUE
-
-    # 1. store.(*Store).ContextWindow -> (*Store).ContextWindowChoice
-    s1_off = find_unique_anchor(
-        data,
-        funcs["ContextWindow"],
-        bytes.fromhex("e0031faa34ffff97810100b51f2003d5"),
-        "Site 1 (ContextWindow)",
-    )
-    s1_va = VM_BASE + s1_off
-    s1_patched = bytes.fromhex("e04740f9") + encode_bl(s1_va + 4, choice_va) + bytes.fromhex("08000014")
-    # `ldr x2, [sp, #0x88]; ldr x2, [x2, #field]; cbz x2`, where the field moved from 0xb8 to 0x58 in v1.5.6.
-    # A patched binary holds a `bl` there instead, and reports through `s1_patched`.
-    (s1_field_ldr,) = struct.unpack_from("<I", data, s1_off + 4)
-    if s1_field_ldr & LDR_X_ANY_OFFSET != ldr_x(2, 2):
-        s1_field_ldr = 0xF9405C42
-    s1_orig = bytes.fromhex("e24740f9") + struct.pack("<I", s1_field_ldr) + bytes.fromhex("620100b4")
-
-    # 2. model.SelectorModel.offersContextWindow -> return true
-    # The anchor stops before `mov x0, #-1; tbnz`, since Site #2a rewrites the mov.
-    s2_off = (
-        find_unique_words(
-            data,
-            funcs["offersContextWindow"],
-            ((ldr_x(0, 31), LDR_X_ANY_OFFSET), (0x14000002, 0xFFFFFFFF)),
-            "Site 2 (offersContextWindow)",
-        )
-        + 8
-    )
-    s2_va = VM_BASE + s2_off
-    s2_patched = bytes.fromhex("200080d2e7ffff17")
-    if struct.unpack_from("<I", data, s2_off - 0x60)[0] != 0xA97FFBFD:
-        raise RuntimeError(f"offersContextWindow epilogue moved from s2 - 0x60 at {hex(s2_va)}")
-    s2_reg = struct.unpack_from("<I", data, s2_off + 8)[0] & 0x1F
-    s2_m_sp = _go_frame(data, funcs["offersContextWindow"]) + 8
-    s2_orig = struct.pack("<II", ldr_x(s2_reg, 31) | ((s2_m_sp // 8) << 10), ldr_x(s2_reg, s2_reg))
-
-    # 1a-2b. Admit the CONTEXT_WINDOW_EXTRA_FAMILY where each function misses the ContextWindowSelectable
-    # loop. The miss writes `mov x0, #-1` just before `tbnz x0, #63, <miss>`; the entry branches into
-    # a matcher instead, which rejoins after the tbnz on a hit and at its target otherwise. Each
-    # matcher sits 0x34 past its Site #1/#2, in code those sites leave unreachable.
-    memequal_va = VM_BASE + funcs["memequal"][0]
-    s1a_off = find_unique_anchor(
-        data, funcs["ContextWindow"], bytes.fromhex("e01f40f902000014"), "Site 1a (ContextWindow whitelist miss)"
-    )
-    s2a_off = s2_off - 8
-    s1b_off, s2b_off = s1_off + 0x34, s2_off + 0x34
-    s1a_va, s1b_va, s2a_va, s2b_va = (VM_BASE + o for o in (s1a_off, s1b_off, s2a_off, s2b_off))
-    s1b_patched = build_selectable_matcher(
-        s1b_va, 1, s1a_va + 8, decode_tbnz_target(data, s1a_off + 4, "Site 1a"), memequal_va
-    )
-    s2b_patched = build_selectable_matcher(
-        s2b_va, 2, s2a_va + 8, decode_tbnz_target(data, s2a_off + 4, "Site 2a"), memequal_va
-    )
-    for off in range(funcs["offersContextWindow"][0], s2_off, 4):
-        if off == s2a_off:
-            continue
-        target = branch_target(struct.unpack_from("<I", data, off)[0], off)
-        if target is not None and s2b_off <= target < s2b_off + len(s2b_patched):
-            raise RuntimeError(f"Site 2b cave in offersContextWindow reached from {hex(VM_BASE + off)}")
-
-    # 3. store.(*Store).ModelMaxTokens -> effective context window limit resolver
-    s3_off = mmt_off
-    s3_va = mmt_va
-
-    # 4. store.BuildStatusLineData -> effective context window denominator
-    s4_off = find_unique_anchor(
-        data,
-        funcs["BuildStatusLineData"],
-        bytes.fromhex("e65f40f9e77b40f9e5ffff17e0c740f9"),
-        "Site 4 (BuildStatusLineData denominator)",
-    )
-    s4_va = VM_BASE + s4_off
-    s4_patched = encode_bl(s4_va, mmt_va)
-
-    # 5. store.BuildStatusLineData -> disable exceeds_200k_tokens false alarm
-    s5_off = find_unique_anchor(
-        data,
-        funcs["BuildStatusLineData"],
-        bytes.fromhex("e13f40f902a881d26200a0f23f0002eb"),
-        "Site 5 (BuildStatusLineData exceeds_200k_tokens)",
-    )
-    s5_va = VM_BASE + s5_off
-
-    # 6. model.ContextModel.collectStats -> effective context window in /context
-    _, cs_end = funcs["collectStats"]
-    s6_off = find_unique_anchor(
-        data,
-        (cs_end - 0x100, cs_end),
-        bytes.fromhex("e6ffff17"),
-        "Site 6 (ContextModel.collectStats)",
-    )
-    s6_va = VM_BASE + s6_off
-    s6_patched = encode_bl(s6_va, mmt_va + 0x74)
-
-    # 7. store.BuildStatusLineData -> actual API input + cache_read numerator
-    s7_off = find_unique_anchor(
-        data,
-        funcs["BuildStatusLineData"],
-        bs_ldr_x5 + bytes.fromhex("e30301aa842840f9a40300b4"),
-        "Site 7 (BuildStatusLineData numerator)",
-    )
-    s7_va = VM_BASE + s7_off
-
+    v1.5.15 widened native `AGY_CLI_AUTO_COMPACT_OVERRIDE` across all eligible models with
+    `/context` and `/model` display, retiring the old dead-flag `/model` selector and
+    `BuildStatusLineData` sites (#1-#7, #1a-#2b). `hub-wrapper.sh` exports `AUTO_COMPACT_WINDOW`
+    from `agy-neo.conf` as `AGY_CLI_AUTO_COMPACT_OVERRIDE`, and `statusline.sh` computes its
+    usage percentage against the same effective threshold.
+    """
     # 7a. utils.GetCheckpointConfig -> remove hardcoded min(threshold, 256000) (0x3e800) ceiling
     s7a_off = find_unique_anchor(
         data,
@@ -705,96 +479,6 @@ def _resolve_context_window_sites(
     s7d_va = VM_BASE + s7d_off
 
     return (
-        PatchSite(
-            domain="context-window",
-            name="store.(*Store).ContextWindow -> (*Store).ContextWindowChoice",
-            va=s1_va,
-            offset=s1_off,
-            original=s1_orig,
-            patched=s1_patched,
-        ),
-        PatchSite(
-            domain="context-window",
-            name="store.(*Store).ContextWindow -> whitelist miss enters extra-model matcher",
-            va=s1a_va,
-            offset=s1a_off,
-            original=bytes.fromhex("00008092"),
-            patched=encode_b(s1a_va, s1b_va),
-        ),
-        PatchSite(
-            domain="context-window",
-            name=f"store.(*Store).ContextWindow -> admit {CONTEXT_WINDOW_EXTRA_FAMILY.decode()}*",
-            va=s1b_va,
-            offset=s1b_off,
-            original=bytes.fromhex(
-                "e0031faae1031faafd835ff8fe0748f8c0035fd64500048aa5ec7cd3a5200091656865f8bf0001ebc0feff54"
-            ),
-            patched=s1b_patched,
-        ),
-        PatchSite(
-            domain="context-window",
-            name="model.SelectorModel.offersContextWindow -> return true",
-            va=s2_va,
-            offset=s2_off,
-            original=s2_orig,
-            patched=s2_patched,
-        ),
-        PatchSite(
-            domain="context-window",
-            name="model.SelectorModel.offersContextWindow -> whitelist miss enters extra-model matcher",
-            va=s2a_va,
-            offset=s2a_off,
-            original=bytes.fromhex("00008092"),
-            patched=encode_b(s2a_va, s2b_va),
-        ),
-        PatchSite(
-            domain="context-window",
-            name=f"model.SelectorModel.offersContextWindow -> admit {CONTEXT_WINDOW_EXTRA_FAMILY.decode()}*",
-            va=s2b_va,
-            offset=s2b_off,
-            original=_recoverable(data, s2b_off, s2b_patched),
-            patched=s2b_patched,
-        ),
-        PatchSite(
-            domain="context-window",
-            name="store.(*Store).ModelMaxTokens -> effective context window limit resolver",
-            va=s3_va,
-            offset=s3_off,
-            original=None,  # Verified via MODEL_MAX_TOKENS_ORIG_HEAD + MODEL_MAX_TOKENS_ORIG_TAIL
-            patched=mmt_patched,
-        ),
-        PatchSite(
-            domain="context-window",
-            name="store.BuildStatusLineData -> effective context window denominator",
-            va=s4_va,
-            offset=s4_off,
-            original=bytes.fromhex("e10304aa"),
-            patched=s4_patched,
-        ),
-        PatchSite(
-            domain="context-window",
-            name="store.BuildStatusLineData -> disable exceeds_200k_tokens false alarm",
-            va=s5_va,
-            offset=s5_off,
-            original=bytes.fromhex("e2d79f9a"),
-            patched=bytes.fromhex("e2031faa"),
-        ),
-        PatchSite(
-            domain="context-window",
-            name="model.ContextModel.collectStats -> effective context window in /context",
-            va=s6_va,
-            offset=s6_off,
-            original=bytes.fromhex("e00304aa"),
-            patched=s6_patched,
-        ),
-        PatchSite(
-            domain="context-window",
-            name="store.BuildStatusLineData -> actual API input + cache_read numerator",
-            va=s7_va,
-            offset=s7_off,
-            original=bytes.fromhex("e37b00f9831441a9e58f06a9831c40f9e33300f91f2003d5"),
-            patched=bytes.fromhex("831441a9e58f06a9851c40f9e53300f96300058be37b00f9"),
-        ),
         PatchSite(
             domain="context-window",
             name="utils.GetCheckpointConfig -> remove 256K (0x3e800) ceiling",
@@ -4354,17 +4038,6 @@ def site_state(data: bytes | bytearray, site: PatchSite) -> str:
         if actual == site.original:
             return "unpatched"
     else:
-        # Site 3 (ModelMaxTokens): 140 bytes with a version-dependent `bl runtime.memequal` at +100..+104
-        # +28 loads a Store field whose offset moves between releases (0x68 through v1.5.5, 0x148 in v1.5.6).
-        head = MODEL_MAX_TOKENS_ORIG_HEAD
-        if (
-            actual[:28] == head[:28]
-            and struct.unpack_from("<I", actual, 28)[0] & LDR_X_ANY_OFFSET == ldr_x(3, 0)
-            and actual[32 : len(head)] == head[32:]
-            and actual.endswith(MODEL_MAX_TOKENS_ORIG_TAIL)
-            and actual[103] == 0x97
-        ):
-            return "unpatched"
         # Site 7b (applyFeatureProviderCheckpointOverrideConfig): 24 bytes with `bl errorreport.ReportError` at +16..+20
         if (
             len(actual) == 24
@@ -4559,14 +4232,60 @@ def revert_patch(path: pathlib.Path) -> None:
     print(f"[done] Reverted and re-signed {path}")
 
 
-def set_context_window(preset: str) -> None:
-    settings = json.loads(SETTINGS_PATH.read_text()) if SETTINGS_PATH.exists() else {}
-    if preset == "Default":
-        settings.pop("contextWindow", None)
+def _ensure_neo_conf() -> pathlib.Path:
+    """Install default agy-neo.conf on first run, or append AUTO_COMPACT_WINDOW if missing."""
+    conf_path = pathlib.Path(os.environ.get("AGY_NEO_CONFIG") or AGY_NEO_CONF_TARGET)
+    if not conf_path.exists():
+        if AGY_NEO_CONF_SOURCE.exists():
+            conf_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_cfg = conf_path.with_suffix(".conf.tmp")
+            shutil.copy2(AGY_NEO_CONF_SOURCE, tmp_cfg)
+            tmp_cfg.replace(conf_path)
+            print(f"[cfg]  Installed default config {AGY_NEO_CONF_SOURCE} -> {conf_path}")
+        return conf_path
+    existing = _read_neo_conf(conf_path)
+    if "AUTO_COMPACT_WINDOW" not in existing and AGY_NEO_CONF_SOURCE.exists():
+        src_text = AGY_NEO_CONF_SOURCE.read_text()
+        marker = "# Auto-compaction threshold"
+        if marker in src_text:
+            block = "\n" + src_text[src_text.index(marker) :].rstrip() + "\n"
+        else:
+            block = "\nAUTO_COMPACT_WINDOW=512K\n"
+        cur = conf_path.read_text()
+        tmp_cfg = conf_path.with_suffix(".conf.tmp")
+        tmp_cfg.write_text(cur.rstrip() + "\n" + block)
+        tmp_cfg.replace(conf_path)
+        print(f"[cfg]  Added AUTO_COMPACT_WINDOW=512K to {conf_path}")
+    return conf_path
+
+
+def set_context_window(spec: str) -> None:
+    """Set AUTO_COMPACT_WINDOW in agy-neo.conf (exported as AGY_CLI_AUTO_COMPACT_OVERRIDE)."""
+    cleaned = spec.strip()
+    low = cleaned.lower()
+    if low in ("default", "off", "none", "0"):
+        val = "off"
     else:
-        settings["contextWindow"] = preset
-    SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n")
-    print(f"[cfg]  Updated {SETTINGS_PATH}: contextWindow={preset!r}")
+        import re as _re
+        if not _re.fullmatch(r"\d+(?:\.\d+)?[kKmM%]|\d+", cleaned):
+            raise SystemExit(f"Invalid --set-window value {spec!r}: expected token count (700000), K/M (512K, 0.5M), % (80%), or off/Default")
+        val = cleaned
+    conf_path = _ensure_neo_conf()
+    lines = conf_path.read_text().splitlines() if conf_path.exists() else []
+    replaced = False
+    out: list[str] = []
+    for line in lines:
+        if line.strip().startswith("AUTO_COMPACT_WINDOW="):
+            out.append(f"AUTO_COMPACT_WINDOW={val}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"AUTO_COMPACT_WINDOW={val}")
+    tmp_cfg = conf_path.with_suffix(".conf.tmp")
+    tmp_cfg.write_text("\n".join(out) + "\n")
+    tmp_cfg.replace(conf_path)
+    print(f"[cfg]  Updated {conf_path}: AUTO_COMPACT_WINDOW={val}")
 
 
 def _read_neo_conf(path: pathlib.Path) -> dict[str, str]:
@@ -4597,7 +4316,7 @@ def print_status(binaries: list[pathlib.Path], verbose: bool = False) -> None:
                 print(f"  [{idx:02d}] [{s.domain}] {hex(s.va)} (off {hex(s.offset)}): {s.name} [{len(s.patched)}B]")
     if SETTINGS_PATH.exists():
         settings = json.loads(SETTINGS_PATH.read_text())
-        print(f"Settings : {SETTINGS_PATH} -> model={settings.get('model')!r}, contextWindow={settings.get('contextWindow')!r}")
+        print(f"Settings : {SETTINGS_PATH} -> model={settings.get('model')!r}")
     conf_path = pathlib.Path(os.environ.get("AGY_NEO_CONFIG") or AGY_NEO_CONF_TARGET)
     conf = _read_neo_conf(conf_path)
     pick = lambda env_k, cfg_k, dflt: os.environ.get(env_k) or conf.get(cfg_k) or dflt
@@ -4607,7 +4326,8 @@ def print_status(binaries: list[pathlib.Path], verbose: bool = False) -> None:
         f"ttl={pick('AGY_CACHE_TTL', 'CACHE_TTL', '5m')}, max_touches={pick('AGY_CACHE_MAX_TOUCHES', 'CACHE_MAX_TOUCHES', '4')}"
     )
     env_override = os.environ.get("AGY_CLI_AUTO_COMPACT_OVERRIDE")
-    print(f"Env Var  : AGY_CLI_AUTO_COMPACT_OVERRIDE={env_override!r}")
+    win_effective = env_override if env_override is not None else conf.get("AUTO_COMPACT_WINDOW", "512K")
+    print(f"Window   : {conf_label} -> auto_compact={win_effective!r} (env AGY_CLI_AUTO_COMPACT_OVERRIDE={env_override!r})")
 
 
 def main() -> int:
@@ -4621,8 +4341,8 @@ def main() -> int:
     parser.add_argument("-v", "--verbose", action="store_true", help="Print resolved virtual addresses for each site")
     parser.add_argument(
         "--set-window",
-        choices=VALID_PRESETS,
-        help="Optionally set 'contextWindow' in ~/.gemini/antigravity-cli/settings.json",
+        metavar="SPEC",
+        help="Set AUTO_COMPACT_WINDOW in agy-neo.conf (e.g. 512K, 800K, 0.5M, 80%%, 700000, or off)",
     )
     parser.add_argument(
         "--binary",
@@ -4644,12 +4364,7 @@ def main() -> int:
             shutil.copy2(STATUSLINE_SOURCE, tmp_sl)
             tmp_sl.replace(STATUSLINE_TARGET)
             print(f"[sync] Atomically synced {STATUSLINE_SOURCE} -> {STATUSLINE_TARGET}")
-        if AGY_NEO_CONF_SOURCE.exists() and not AGY_NEO_CONF_TARGET.exists():
-            AGY_NEO_CONF_TARGET.parent.mkdir(parents=True, exist_ok=True)
-            tmp_cfg = AGY_NEO_CONF_TARGET.with_suffix(".conf.tmp")
-            shutil.copy2(AGY_NEO_CONF_SOURCE, tmp_cfg)
-            tmp_cfg.replace(AGY_NEO_CONF_TARGET)
-            print(f"[cfg]  Installed default config {AGY_NEO_CONF_SOURCE} -> {AGY_NEO_CONF_TARGET}")
+        _ensure_neo_conf()
     elif args.revert:
         for path in binaries:
             revert_patch(path)

@@ -8,17 +8,23 @@ export AGY_CLI_DISABLE_AUTO_UPDATE=true
 
 agy_bin=$HOME/.local/bin/agy
 
-# Load prompt-cache keepalive policy from agy-neo.conf and export AGY_CACHE_MAX_TOUCHES
-# for the patched native modelapiccpa.keepAlivePings engine in ~/.local/bin/agy.
+# Load policy from agy-neo.conf: native keepalive (AGY_CACHE_MAX_TOUCHES) and
+# auto-compaction threshold (AGY_CLI_AUTO_COMPACT_OVERRIDE).
 () {
   local neo_conf=${AGY_NEO_CONFIG:-$HOME/.gemini/antigravity-cli/agy-neo.conf}
-  local CACHE_KEEPALIVE=on CACHE_TTL=5m CACHE_MAX_TOUCHES=4
+  local CACHE_KEEPALIVE=on CACHE_TTL=5m CACHE_MAX_TOUCHES=4 AUTO_COMPACT_WINDOW=512K
   [[ -r $neo_conf ]] && source $neo_conf 2>/dev/null
   local gate=${AGY_CACHE_KEEPALIVE:-$CACHE_KEEPALIVE}
   if [[ "${gate:l}" == (0|false|off|no) ]]; then
     export AGY_CACHE_MAX_TOUCHES=0
   else
     export AGY_CACHE_MAX_TOUCHES="${AGY_CACHE_MAX_TOUCHES:-$CACHE_MAX_TOUCHES}"
+  fi
+  if [[ -z "${AGY_CLI_AUTO_COMPACT_OVERRIDE+x}" ]]; then
+    local win=${AUTO_COMPACT_WINDOW:-}
+    if [[ -n "$win" && "${win:l}" != (0|false|off|no|default) ]]; then
+      export AGY_CLI_AUTO_COMPACT_OVERRIDE="$win"
+    fi
   fi
 }
 
