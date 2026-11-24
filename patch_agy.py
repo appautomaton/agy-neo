@@ -128,6 +128,12 @@ TARGET_SYMBOLS: dict[str, str] = {
     "mapdeleteFaststr": "runtime.mapdelete_faststr",
     "thoughtBodyRows": "google3/third_party/jetski/cli/render/render.thoughtBodyRows",
     "isInFlightThinkingOnly": "google3/third_party/jetski/cli/render/render.isInFlightThinkingOnly",
+    "codeBlockRender": "google3/third_party/golang/charm_land/glamour/v/v2/ansi/ansi.(*CodeBlockElement).Render",
+    "quickHighlight": "google3/third_party/golang/github_com/alecthomas/chroma/v/v2/quick/quick.Highlight",
+    "highlightCode": "google3/third_party/jetski/cli/render/render.HighlightCode",
+    "sharedStyles": "google3/third_party/jetski/cli/render/render.SharedStyles",
+    "newMarkdownInputs": "google3/third_party/jetski/cli/render/render.newMarkdownInputs",
+    "markdownCacheRender": "google3/third_party/jetski/cli/render/render.(*markdownCache).render",
 }
 
 # Version-variant symbols (v1.5.14 unified Gateway request building and renamed glamourStyleForScheme -> glamourStyle;
@@ -168,6 +174,8 @@ def rendered_wrapper() -> bytes:
     return HUB_WRAPPER_SOURCE.read_bytes()
 STATUSLINE_SOURCE = REPO / "statusline.sh"
 STATUSLINE_TARGET = HOME / ".gemini/antigravity-cli/statusline.sh"
+TITLE_SOURCE = REPO / "title.sh"
+TITLE_TARGET = HOME / ".gemini/antigravity-cli/title.sh"
 AGY_NEO_CONF_SOURCE = REPO / "agy-neo.conf"
 AGY_NEO_CONF_TARGET = HOME / ".gemini/antigravity-cli/agy-neo.conf"
 
@@ -2072,6 +2080,18 @@ LIGHT_LEAF_ROOM = 0x80  # bytes Site #49h's leaf may take before Site #50i's det
 GAP_LEAF_ROOM = 0x40  # bytes Site #49k's leaf may take before Site #49h's
 
 
+CODE_THEME_LEAF_ROOM = 0xE0  # bytes Site #58b's adaptive light/dark code-theme leaves take before Site #49k's
+
+
+def _code_theme_leaf_base(data: bytes | bytearray) -> int:
+    """File offset of Site #58b's adaptive light/dark code-theme leaves, before Site #49k's."""
+    fill, _ = _text_tail_cave(data)
+    base = (_gap_leaf_base(data) - CODE_THEME_LEAF_ROOM) & ~0xF
+    if base < fill:
+        raise RuntimeError("the __TEXT fill has no room for the adaptive code-theme leaves")
+    return base
+
+
 def _gap_leaf_base(data: bytes | bytearray) -> int:
     """File offset of Site #49k's leaf, before Site #49h's stage-color leaf."""
     fill, _ = _text_tail_cave(data)
@@ -2720,9 +2740,32 @@ def _resolve_verb_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int
 CODE_COMMENT_GRAY = (b'<entry type="Comment" style="italic #999999"/>', b'<entry type="Comment" style="italic #979797"/>')
 
 
-def _resolve_code_theme_sites(data: bytes | bytearray) -> tuple[PatchSite, ...]:
-    """Site #58: the `native` code style's comment gray, off the 246/247 tie."""
+def _resolve_code_theme_sites(
+    data: bytes | bytearray, funcs: dict[str, tuple[int, int]]
+) -> tuple[PatchSite, ...]:
+    """Sites #58a-#58f: flicker-free dark comments and adaptive light-mode code syntax highlighting.
+
+    Stock `agy` hardcodes dark-only Chroma themes for `colorScheme == "terminal"`: `native`
+    (`#d0d0d0` foreground) in `render.glamourStyle` for Markdown fenced code blocks, and `swapoff`
+    (`#e5e5e5`/`#ffffff`) in `render.codeTheme` for Artifact code previews. On light terminals
+    (e.g. Modus Operandi Tinted `#fbf7f0`), plain fenced blocks collapse to low-contrast pale gray.
+
+    Sites #58b-#58f read the live terminal polarity byte maintained by Site #34 + DEC 2031
+    (`bg_byte_va`: 0/237 Dark, 254 Light) from four pure-leaf ARM64 detours in `__TEXT` tail fill:
+      - #58c (`CodeBlockElement.Render`): tail-calls `quick.Highlight` with `"github"` instead of
+        `"native"` when Light (`github` clears `Background.bg` and omits `Background.fg`, so plain
+        fenced blocks inherit native terminal ink while syntax tokens render in GitHub Light).
+      - #58d (`render.HighlightCode`): tail-calls `render.SharedStyles("light")` instead of
+        `"terminal"` when Light so Artifact code previews use `"github"` instead of `"swapoff"`.
+      - #58e/#58f (`newMarkdownInputs` & `markdownCache.render`): XOR bit 63 of `themeGen` when
+        Light so Dark and Light markdown renders occupy disjoint warm cache namespaces across
+        startup OSC 11 arrival and live DEC 2031 dark/light toggles.
+    """
     ro_lo, ro_hi = _section_file_bounds(data, "__TEXT", "__rodata")
+    word = lambda o: struct.unpack_from("<I", data, o)[0]
+    pack = lambda *ws: struct.pack(f"<{len(ws)}I", *ws)
+
+    # 58a. chroma `native` style comment gray, off the 246/247 tie.
     start = data.find(b'<style name="native">', ro_lo, ro_hi)
     end = data.find(b"</style>", start, ro_hi) if start >= 0 else -1
     if start < 0 or end < 0:
@@ -2730,11 +2773,222 @@ def _resolve_code_theme_sites(data: bytes | bytearray) -> tuple[PatchSite, ...]:
     hits = [o for needle in CODE_COMMENT_GRAY for o in _find_all(data, needle, (start, end))]
     if len(hits) != 1:
         raise RuntimeError(f"`native` style: expected one comment entry at #999999, found {len(hits)}")
-    off = hits[0]
+    s58a_off = hits[0]
     stock, patched = CODE_COMMENT_GRAY
-    return (PatchSite("code-theme", "chroma `native` style -> comments #979797, nearest 246 alone (no 246/247 coin flip)",
-                      VM_BASE + off, off, _recoverable(data, off, patched, stock if bytes(data[off:off + len(stock)]) == stock else patched),
-                      patched),)
+    s58a = PatchSite(
+        "code-theme",
+        "chroma `native` style -> comments #979797, nearest 246 alone (no 246/247 coin flip)",
+        VM_BASE + s58a_off,
+        s58a_off,
+        _recoverable(data, s58a_off, patched, stock if bytes(data[s58a_off : s58a_off + len(stock)]) == stock else patched),
+        patched,
+    )
+
+    # Shared polarity byte (Site #21/#34) and rodata theme names ("github", "light").
+    bg_byte_va = _halloween_logo_slices(data, funcs)[0][2] + 23
+    bg_imm12 = bg_byte_va & 0xFFF
+    github_off = data.find(b"github", ro_lo, ro_hi)
+    light_off = data.find(b"light", ro_lo, ro_hi)
+    if github_off < 0 or light_off < 0:
+        raise RuntimeError("code-theme: `github` or `light` string missing in __rodata")
+    github_va = VM_BASE + github_off
+    light_va = VM_BASE + light_off
+
+    cave_off = _code_theme_leaf_base(data)
+    cave_va = VM_BASE + cave_off
+    qh_off = funcs["quickHighlight"][0]
+    qh_va = VM_BASE + qh_off
+    ss_off = funcs["sharedStyles"][0]
+    ss_va = VM_BASE + ss_off
+
+    # Leaf layout: [0..72) light_codeblock_theme, [72..140) light_code_preview,
+    # [140..168) light_md_key, [168..196) light_md_check.
+    cb_leaf_off = cave_off
+    hc_leaf_off = cb_leaf_off + 72
+    mk_leaf_off = hc_leaf_off + 68
+    mc_leaf_off = mk_leaf_off + 28
+    cb_leaf_va, hc_leaf_va = VM_BASE + cb_leaf_off, VM_BASE + hc_leaf_off
+    mk_leaf_va, mc_leaf_va = VM_BASE + mk_leaf_off, VM_BASE + mc_leaf_off
+
+    # 58c. ansi.(*CodeBlockElement).Render -> `bl quick.Highlight` (sole caller in binary).
+    cb_bounds = funcs["codeBlockRender"]
+    cb_calls = [
+        o for o in range(cb_bounds[0] + 16, cb_bounds[1], 4)
+        if branch_target(word(o), o) in (qh_off, cb_leaf_off)
+        and all((word(o - 16 + i * 4) & 0xFFC003FF) == (0xF94003E0 | (6 + i)) for i in range(4))
+    ]
+    if len(cb_calls) != 1:
+        raise RuntimeError(f"CodeBlockElement.Render: expected 1 quick.Highlight call, found {len(cb_calls)}")
+    s58c_off = cb_calls[0]
+    s58c_va = VM_BASE + s58c_off
+
+    # 58d. render.HighlightCode -> `bl render.SharedStyles` (sole SharedStyles call).
+    hc_bounds = funcs["highlightCode"]
+    hc_calls = [
+        o for o in range(hc_bounds[0] + 4, hc_bounds[1], 4)
+        if branch_target(word(o), o) in (ss_off, hc_leaf_off)
+        and (word(o - 4) & 0xFFC07FFF) == 0xA94007E0  # ldp x0, x1, [sp, #...]
+    ]
+    if len(hc_calls) != 1:
+        raise RuntimeError(f"render.HighlightCode: expected 1 SharedStyles call, found {len(hc_calls)}")
+    s58d_off = hc_calls[0]
+    s58d_va = VM_BASE + s58d_off
+
+    # 58e. render.newMarkdownInputs -> `ldr x9, [x9]` (themeState.gen load; x10 dead right after).
+    nmi_bounds = funcs["newMarkdownInputs"]
+    nmi_hits = [
+        o for o in range(nmi_bounds[0] + 16, nmi_bounds[1] - 12, 4)
+        if word(o - 16) == 0xC8DFFD29  # ldar x9, [x9]
+        and word(o - 12) == 0xB5000069  # cbnz x9, +12 (-> o)
+        and (word(o - 8) & 0x9F00001F) == 0x90000009  # adrp x9, ...
+        and (word(o - 4) & 0xFFC003FF) == 0x91000129  # add x9, x9, #...
+        and (word(o) == 0xF9400129 or branch_target(word(o), o) == mk_leaf_off)
+        and (word(o + 4) & 0xFFC003FF) == 0xF90003E9  # str x9, [sp, #...]
+        and word(o + 8) == 0xD503201F  # nop
+        and (word(o + 12) & 0x9F00001F) == 0x9000000A  # adrp x10, ... (proves x10 dead)
+    ]
+    if len(nmi_hits) != 1:
+        raise RuntimeError(f"render.newMarkdownInputs: expected 1 themeGen load, found {len(nmi_hits)}")
+    s58e_off = nmi_hits[0]
+    s58e_va = VM_BASE + s58e_off
+
+    # 58f. render.(*markdownCache).render -> `ldr x14, [x14]` (post-render themeGen check; x12 dead).
+    mcr_bounds = funcs["markdownCacheRender"]
+    mcr_hits = [
+        o for o in range(mcr_bounds[0] + 20, mcr_bounds[1] - 8, 4)
+        if word(o - 20) == 0xC8DFFDCE  # ldar x14, [x14]
+        and word(o - 16) == 0xB500006E  # cbnz x14, +12 (-> o - 4)
+        and (word(o - 12) & 0x9F00001F) == 0x9000000E  # adrp x14, ...
+        and (word(o - 8) & 0xFFC003FF) == 0x910001CE  # add x14, x14, #...
+        and (word(o - 4) & 0xFFC003FF) == 0xF94003EF  # ldr x15, [sp, #...]
+        and (word(o) == 0xF94001CE or branch_target(word(o), o) == mc_leaf_off)
+        and word(o + 4) == 0xEB0F01DF  # cmp x14, x15
+        and (word(o + 8) & 0xFF00001F) == 0x54000001  # b.ne ...
+    ]
+    if len(mcr_hits) != 1:
+        raise RuntimeError(f"markdownCache.render: expected 1 themeGen check load, found {len(mcr_hits)}")
+    s58f_off = mcr_hits[0]
+    s58f_va = VM_BASE + s58f_off
+
+    bne = lambda insns: 0x54000001 | ((insns & 0x7FFFF) << 5)
+    ldrb = lambda rt, rn, imm12: 0x39400000 | (imm12 << 10) | (rn << 5) | rt
+
+    # Leaf 1 (72B): light_codeblock_theme — swap "native" -> "github" on Light terminals, tail-call quick.Highlight
+    cb_leaf = (
+        pack(0xF100193F, bne(16))  # cmp x9, #6; b.ne done
+        + encode_adrp(cb_leaf_va + 8, bg_byte_va, 10)
+        + pack(
+            ldrb(10, 10, bg_imm12),  # ldrb w10, [x10, bg_imm12]
+            0x7103F95F,  # cmp w10, #254
+            bne(12),  # b.ne done
+            0xB940010A,  # ldr w10, [x8]
+            0x528C2DCB,  # movz w11, #0x616e ("na")
+            0x72AD2E8B,  # movk w11, #0x6974, lsl #16 ("ti")
+            0x6B0B015F,  # cmp w10, w11
+            bne(7),  # b.ne done
+            0x7940090A,  # ldrh w10, [x8, #4]
+            0x528CAECB,  # movz w11, #0x6576 ("ve")
+            0x6B0B015F,  # cmp w10, w11
+            bne(3),  # b.ne done
+        )
+        + encode_adrp_add(cb_leaf_va + 60, github_va, 8)  # x8 = &"github" (x9 == 6)
+        + encode_b(cb_leaf_va + 68, qh_va)  # b quick.Highlight
+    )
+
+    # Leaf 2 (68B): light_code_preview — swap "terminal" -> "light" on Light terminals, tail-call SharedStyles
+    hc_leaf = (
+        pack(0xF100203F, bne(15))  # cmp x1, #8; b.ne done
+        + encode_adrp(hc_leaf_va + 8, bg_byte_va, 10)
+        + pack(
+            ldrb(10, 10, bg_imm12),  # ldrb w10, [x10, bg_imm12]
+            0x7103F95F,  # cmp w10, #254
+            bne(11),  # b.ne done
+            0xF940000A,  # ldr x10, [x0]
+            0xD28CAE8B,  # movz x11, #0x6574 ("te")
+            0xF2ADAE4B,  # movk x11, #0x6d72, lsl #16 ("rm")
+            0xF2CDCD2B,  # movk x11, #0x6e69, lsl #32 ("in")
+            0xF2ED8C2B,  # movk x11, #0x6c61, lsl #48 ("al")
+            0xEB0B015F,  # cmp x10, x11
+            bne(4),  # b.ne done
+        )
+        + encode_adrp_add(hc_leaf_va + 52, light_va, 0)  # x0 = &"light"
+        + pack(0xD28000A1)  # movz x1, #5
+        + encode_b(hc_leaf_va + 64, ss_va)  # b render.SharedStyles
+    )
+
+    # Leaf 3 (28B): light_md_key — mix (bg_byte == 254) into bit 63 of themeGen in newMarkdownInputs
+    mk_leaf = (
+        pack(0xF9400129)  # ldr x9, [x9]
+        + encode_adrp(mk_leaf_va + 4, bg_byte_va, 10)
+        + pack(
+            ldrb(10, 10, bg_imm12),  # ldrb w10, [x10, bg_imm12]
+            0x7103F95F,  # cmp w10, #254
+            0x9A9F17EA,  # cset x10, eq
+            0xCA0AFD29,  # eor x9, x9, x10, lsl #63
+        )
+        + encode_b(mk_leaf_va + 24, s58e_va + 4)
+    )
+
+    # Leaf 4 (28B): light_md_check — mirror bit 63 mix in markdownCache.render post-render check
+    mc_leaf = (
+        pack(0xF94001CE)  # ldr x14, [x14]
+        + encode_adrp(mc_leaf_va + 4, bg_byte_va, 12)
+        + pack(
+            ldrb(12, 12, bg_imm12),  # ldrb w12, [x12, bg_imm12]
+            0x7103F99F,  # cmp w12, #254
+            0x9A9F17EC,  # cset x12, eq
+            0xCA0CFDCE,  # eor x14, x14, x12, lsl #63
+        )
+        + encode_b(mc_leaf_va + 24, s58f_va + 4)
+    )
+
+    cave_code = cb_leaf + hc_leaf + mk_leaf + mc_leaf
+    if len(cave_code) != 196 or len(cave_code) > CODE_THEME_LEAF_ROOM:
+        raise RuntimeError(f"code-theme leaves size mismatch ({len(cave_code)}B > {CODE_THEME_LEAF_ROOM}B)")
+
+    return (
+        s58a,
+        PatchSite(
+            "code-theme",
+            "__TEXT fill -> adaptive light/dark code-theme & markdown-cache leaves",
+            cave_va,
+            cave_off,
+            b"\x00" * len(cave_code),
+            cave_code,
+        ),
+        PatchSite(
+            "code-theme",
+            "ansi.(*CodeBlockElement).Render -> adaptive `github` Chroma theme on light terminals",
+            s58c_va,
+            s58c_off,
+            encode_bl(s58c_va, qh_va),
+            encode_bl(s58c_va, cb_leaf_va),
+        ),
+        PatchSite(
+            "code-theme",
+            "render.HighlightCode -> adaptive `light` (`github`) code preview on light terminals",
+            s58d_va,
+            s58d_off,
+            encode_bl(s58d_va, ss_va),
+            encode_bl(s58d_va, hc_leaf_va),
+        ),
+        PatchSite(
+            "code-theme",
+            "render.newMarkdownInputs -> include light/dark polarity in markdownCache key",
+            s58e_va,
+            s58e_off,
+            pack(0xF9400129),
+            encode_b(s58e_va, mk_leaf_va),
+        ),
+        PatchSite(
+            "code-theme",
+            "render.(*markdownCache).render -> verify light/dark polarity before caching markdown",
+            s58f_va,
+            s58f_off,
+            pack(0xF94001CE),
+            encode_b(s58f_va, mc_leaf_va),
+        ),
+    )
 
 
 # Sites #57a-#57z: the transcript's status marks take the star's family. A finished call was `●`, a
@@ -4070,7 +4324,7 @@ def _resolve_groups(data: bytes | bytearray, version: str, strict: bool) -> dict
     run("live-thinking", lambda: _resolve_thinking_sites(data, funcs))
     run("pending-verbs", lambda: _resolve_verb_sites(data, funcs))
     run("tool-marks", lambda: _resolve_tool_mark_sites(data, funcs))
-    run("code-theme", lambda: _resolve_code_theme_sites(data))
+    run("code-theme", lambda: _resolve_code_theme_sites(data, funcs))
     run("thought-grouping", lambda: _resolve_thought_grouping_sites(data, funcs))
     run("thought-block", lambda: _resolve_thought_block_sites(data, funcs))
     run("cache-keepalive", lambda: _resolve_keepalive_sites(data, funcs))
@@ -4519,14 +4773,13 @@ def main() -> int:
     if args.apply:
         for path in binaries:
             apply_patch(path)
-        if STATUSLINE_SOURCE.exists() and (
-            not STATUSLINE_TARGET.exists() or STATUSLINE_SOURCE.read_bytes() != STATUSLINE_TARGET.read_bytes()
-        ):
-            STATUSLINE_TARGET.parent.mkdir(parents=True, exist_ok=True)
-            tmp_sl = STATUSLINE_TARGET.with_suffix(".sh.tmp")
-            shutil.copy2(STATUSLINE_SOURCE, tmp_sl)
-            tmp_sl.replace(STATUSLINE_TARGET)
-            print(f"[sync] Atomically synced {STATUSLINE_SOURCE} -> {STATUSLINE_TARGET}")
+        for src, dst in ((STATUSLINE_SOURCE, STATUSLINE_TARGET), (TITLE_SOURCE, TITLE_TARGET)):
+            if src.exists() and (not dst.exists() or src.read_bytes() != dst.read_bytes()):
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                tmp_sh = dst.with_suffix(".sh.tmp")
+                shutil.copy2(src, tmp_sh)
+                tmp_sh.replace(dst)
+                print(f"[sync] Atomically synced {src} -> {dst}")
         _ensure_neo_conf()
     elif args.revert:
         for path in binaries:

@@ -38,8 +38,9 @@ trim stock system-prompt bloat, and clean up the terminal UI.
   or `ctrl+o`—orthogonal to `verbosity` (`low` / `medium` / `high`). Thoughts stay separate from tool
   groups.
 - Marks running tool calls with `⊹` and completed ones with `⋆`, quiets the prompt/tool/thought
-  palette, stabilizes streaming code-comment contrast, and updates the prompt bar live when the
-  terminal switches between light and dark mode.
+  palette, stabilizes streaming code-comment contrast, and updates both the prompt bar and fenced
+  code / preview syntax highlighting (`native`/`swapoff` dark ↔ `github` light, with separate dark
+  and light markdown cache namespaces) live when the terminal switches between light and dark mode.
 - Replaces the stock spinner row with a breathing Gemini star, a blue-to-lavender running light over
   one verb per turn, and an effort/elapsed aside (`(12s ⋅ thinking with high effort)`), with height
   accounting so the status line stays on screen.
@@ -69,8 +70,8 @@ trim stock system-prompt bloat, and clean up the terminal UI.
 Requires macOS on Apple silicon, Python 3.12+, `jq`, and Xcode Command Line Tools (`codesign`).
 
 1. Place stock `agy v1.5.16` at `~/.local/bin/agy`.
-2. Apply the binary patch and install `~/.gemini/bin/agy` (`hub-wrapper.sh`), `statusline.sh`, and
-   `agy-neo.conf` (defaults to `AUTO_COMPACT_WINDOW=512K`):
+2. Apply the binary patch and install `~/.gemini/bin/agy` (`hub-wrapper.sh`), `statusline.sh`,
+   `title.sh`, and `agy-neo.conf` (defaults to `AUTO_COMPACT_WINDOW=512K`):
    ```sh
    mkdir -p ~/.gemini/bin
    python3 patch_agy.py --apply
@@ -83,9 +84,10 @@ Requires macOS on Apple silicon, Python 3.12+, `jq`, and Xcode Command Line Tool
    export AGY_CLI_DISABLE_AUTO_UPDATE=true   # must be the exact string `true`
    alias agy="$HOME/.gemini/bin/agy"         # loads agy-neo.conf and gateway routing
    ```
-4. Enable the status line in `~/.gemini/antigravity-cli/settings.json`:
+4. Enable the status line (and optional OSC 2 terminal title) in `~/.gemini/antigravity-cli/settings.json`:
    ```json
-   "statusLine": {"type": "command", "command": "~/.gemini/antigravity-cli/statusline.sh", "enabled": true}
+   "statusLine": {"type": "command", "command": "~/.gemini/antigravity-cli/statusline.sh", "enabled": true},
+   "title": {"type": "command", "command": "~/.gemini/antigravity-cli/title.sh", "enabled": true}
    ```
 5. Optional local gateway (CLIProxyAPI on `127.0.0.1:5233`):
    ```sh
@@ -94,7 +96,7 @@ Requires macOS on Apple silicon, Python 3.12+, `jq`, and Xcode Command Line Tool
    Set `CPA_API_KEY` in `~/.gemini/agy-gateway.env`. Plain `agy` uses Google OAuth;
    `agy --settings '{"modelProvider":"gemini"}'` (or `AGY_LOCAL_GATEWAY=on`, or VS Code `--hub`)
    routes through the local gateway via `modelapiccpa`.
-6. Verify with `python3 patch_agy.py --status -v`: `~/.local/bin/agy` reports `patched` (`148`
+6. Verify with `python3 patch_agy.py --status -v`: `~/.local/bin/agy` reports `patched` (`153`
    sites) and `~/.gemini/bin/agy` reports `wrapper`.
 
 ## Upgrading to a new `agy` release
@@ -129,7 +131,7 @@ editing `patch_agy.py`. Remove the previous `.orig` backup once the new release 
 | [`capture_prompt.py`](./capture_prompt.py), [`prompt_templates.py`](./prompt_templates.py) | Captures rendered prompts and tool schemas; inspects and validates embedded `.tmpl` slots. |
 | [`templates/v1.5.16/`](./templates/v1.5.16/README.md) | System-prompt overrides and stock SHA-256 digests for `agy v1.5.16`. |
 | [`hub-wrapper.sh`](./hub-wrapper.sh) | Installed at `~/.gemini/bin/agy`: exports `agy-neo.conf` keepalive and auto-compact policy and routes gateway/`--hub` sessions. |
-| [`agy-neo.conf`](./agy-neo.conf), [`statusline.sh`](./statusline.sh) | Policy file (`~/.gemini/antigravity-cli/agy-neo.conf`) and status line reading `StatusLineData.CacheKeepalive` and `AUTO_COMPACT_WINDOW`. |
+| [`agy-neo.conf`](./agy-neo.conf), [`statusline.sh`](./statusline.sh), [`title.sh`](./title.sh) | Policy file (`~/.gemini/antigravity-cli/agy-neo.conf`), status line (`CacheKeepalive` & `AUTO_COMPACT_WINDOW`), and OSC 2 terminal title script (`<glyph> <dir> ⋅ <title>`). |
 | [`consult_gemini_mcp.py`](./consult_gemini_mcp.py) | MCP server delegating queries to a shared `agy acp` process. |
 | [`assets/`](./assets) | Hero SVG rendered from the patch's own spinner frames and palette. |
 | [`diagnostics/`](./diagnostics) | Standalone upstream protocol and cache-TTL probes kept for reference. |

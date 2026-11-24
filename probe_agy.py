@@ -569,7 +569,11 @@ def run_live_probe(binary: Path) -> tuple[bool, str]:
                 if t == 1
                 else "**Checking expanded**\n\nExpanded body text."
             )
-            answer = "First answer." if t == 1 else "Second answer."
+            answer = (
+                "First answer."
+                if t == 1
+                else "Second answer.\n\n```text\nlight_code_probe\n```\n\n```python\ndef probe(): return 1\n```"
+            )
             self.send_response(200)
             self.send_header("content-type", "text/event-stream")
             self.send_header("connection", "close")
@@ -721,10 +725,21 @@ def run_live_probe(binary: Path) -> tuple[bool, str]:
         failures.append("high + /thinking off did not fold to 1-line title without token count")
     if "Expanded body text." not in turn2_dump or "25 tokens" not in turn2_dump:
         failures.append("high + /thinking on did not expand thought body with token count")
+    dark_plain_ok = ("#d0d0d0]'light_code_probe'" in turn2_dump or "fg=252]'light_code_probe'" in turn2_dump)
+    light_plain_fixed = (
+        "light_code_probe" in light_dump
+        and "#d0d0d0]'light_code_probe'" not in light_dump
+        and "fg=252]'light_code_probe'" not in light_dump
+    )
+    light_py_ok = ("#cf222e]'def'" in light_dump or "fg=160]'def'" in light_dump)
+    if not (dark_plain_ok and light_plain_fixed and light_py_ok):
+        failures.append(
+            f"adaptive light code theme failed (dark_native={dark_plain_ok}, light_plain={light_plain_fixed}, light_py={light_py_ok})"
+        )
 
     if failures:
         return False, "; ".join(failures)
-    return True, "SessionId, keepalive(state=1,left=12), 512K auto-compact, DEC 2031 (237->254), /thinking off|on orthogonal"
+    return True, "SessionId, keepalive(state=1,left=12), 512K auto-compact, DEC 2031 (237->254 + light code), /thinking off|on orthogonal"
 
 
 def rehearse(stock: Path | None, old: Path | None, workdir: Path | None, no_tui: bool) -> int:

@@ -5,6 +5,9 @@
  "TrajectoryChatConverter.getMaxTokensForStep -> disable 64K USER_INPUT clamp": [
   "6e33c558093fb377"
  ],
+ "ansi.(*CodeBlockElement).Render -> adaptive `github` Chroma theme on light terminals": [
+  "c9ecc984c52e940d"
+ ],
  "codeassistclient.(*CodeAssistClient).GenerateContentFromGateway -> preserve GenerateContentRequest.SessionId on gateway requests": [
   "e9e3926da1f8c28b"
  ],
@@ -144,6 +147,12 @@
   "55d019ab133d8f8b",
   "af58226f8191d040"
  ],
+ "render.(*markdownCache).render -> verify light/dark polarity before caching markdown": [
+  "6e97149b0446a430"
+ ],
+ "render.HighlightCode -> adaptive `light` (`github`) code preview on light terminals": [
+  "c9ecc984c52e940d"
+ ],
  "render.RenderBackgroundCommandOutput @+0x20 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
@@ -215,6 +224,9 @@
  ],
  "render.isInFlightThinkingOnly -> false (keep live thoughts visible while running)": [
   "158c93c1f94e4f79"
+ ],
+ "render.newMarkdownInputs -> include light/dark polarity in markdownCache key": [
+  "4dce6c49e80c62cc"
  ],
  "render.renderCommandOutput -> `⎿` elbow in the reply's faint style, not the user bar's": [
   "1dc6ae0587d35053"
