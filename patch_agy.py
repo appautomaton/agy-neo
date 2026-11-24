@@ -130,13 +130,16 @@ TARGET_SYMBOLS: dict[str, str] = {
     "isInFlightThinkingOnly": "google3/third_party/jetski/cli/render/render.isInFlightThinkingOnly",
 }
 
-# Version-variant symbols (v1.5.14 unified Gateway request building and renamed glamourStyleForScheme -> glamourStyle).
+# Version-variant symbols (v1.5.14 unified Gateway request building and renamed glamourStyleForScheme -> glamourStyle;
+# v1.5.16 extracted fitPendingLabel and added activityPhaseTimer.elapsed in pendingLineView).
 OPTIONAL_SYMBOLS: dict[str, str] = {
     "glamourStyle": "google3/third_party/jetski/cli/render/render.glamourStyle",
     "glamourStyleForScheme": "google3/third_party/jetski/cli/render/render.glamourStyleForScheme",
     "buildGatewayHTTPRequest": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*CodeAssistClient).buildGatewayHTTPRequest",
     "StreamGenerateContentFromGateway": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*CodeAssistClient).StreamGenerateContentFromGateway",
     "GenerateContentFromGateway": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*CodeAssistClient).GenerateContentFromGateway",
+    "fitPendingLabel": "google3/third_party/jetski/cli/model/model.fitPendingLabel",
+    "activityPhaseTimerElapsed": "google3/third_party/jetski/cli/model/model.(*activityPhaseTimer).elapsed",
 }
 
 class PatchSite(NamedTuple):
@@ -514,24 +517,51 @@ def _resolve_context_window_sites(
     )
 
 
+def _find_step_content_s8(data: bytes | bytearray, sc: tuple[int, int]) -> tuple[int, int, int]:
+    """Locate stepContent's expanded CoT test (`tbz wR, #0, span`) right after the `"Thought Process"` fallback.
+
+    Returns `(s8_off, hdr_ptr_reg, exp_reg)`: `hdr_ptr_reg` holds the header string pointer (`x2` on
+    v1.5.15, `x0` on v1.5.16+ after `plannerThinkingDuration` extraction); `exp_reg` holds `expanded`.
+    """
+    word = lambda o: struct.unpack_from("<I", data, o)[0]
+    hits: list[tuple[int, int, int]] = []
+    for o in range(sc[0], sc[1] - 24, 4):
+        if word(o) != 0xB2400FE1:  # orr x1, xzr, #0xf  (len("Thought Process") == 15)
+            continue
+        hdr_reg = word(o + 4) & 0x1F
+        va = _adrp_add_at(data, o + 4, hdr_reg)
+        if va is None or bytes(data[va - VM_BASE : va - VM_BASE + 15]) != b"Thought Process":
+            continue
+        if word(o + 12) & 0xFF8003FF != 0x910003FB or word(o + 16) & 0xFFC003E0 != 0x39400360:
+            continue
+        exp_reg = word(o + 16) & 0x1F
+        if word(o + 20) & 0xFFF8001F != (0x36000000 | exp_reg):
+            continue
+        hits.append((o + 20, hdr_reg, exp_reg))
+    if len(hits) != 1:
+        raise RuntimeError(f"stepContent: expected one expanded CoT test after `Thought Process`, found {len(hits)}")
+    return hits[0]
+
+
 def _resolve_cot_sites(
     data: bytes | bytearray, funcs: dict[str, tuple[int, int]], nl3_va: int
 ) -> tuple[tuple[PatchSite, ...], PatchSite]:
     """Sites #8-#11 & #23: Persistent expanded CoT (`∴ Thought...`, flush-left `Faint+Italic` paragraphs, `\\n\\n` spacing)."""
     # 8. Retired: it made stepContent expand every finished thought; Sites #54a-#54i decide by verbosity.
-    #    Its anchor still locates Sites #9-#11.
-    s8_off = (
-        find_unique_anchor(
-            data,
-            funcs["stepContent"],
-            bytes.fromhex("e20300aa04000014e10f40b2"),
-            "Site 8 (stepContent expanded CoT check)",
-        )
-        + 0x10
-    )
+    #    Its anchor still locates Site #9.
+    sc = funcs["stepContent"]
+    s8_off, _, _ = _find_step_content_s8(data, sc)
 
     # 9. render.stepContent -> fold Styles[+0x0510] stack copy loop & mutate "▾" (0xe2 96 be) to "∴" (0xe2 88 b4)
-    s9_off = s8_off + 0x84
+    word = lambda o: struct.unpack_from("<I", data, o)[0]
+    s9_hits = [
+        o for o in range(s8_off + 0x60, min(sc[1] - 36, s8_off + 0xB0), 4)
+        if word(o) in (0xD2800158, 0xD2800298)  # mov x24, #10 (stock) or #20 (patched)
+        and word(o + 4) == 0xACC14470 and word(o + 8) == 0xAC814450  # ldp/stp q16, q17, [x3]/[x2]
+    ]
+    if len(s9_hits) != 1:
+        raise RuntimeError(f"stepContent: expected one Styles[+0x0510] CoT header copy loop after Site 8, found {len(s9_hits)}")
+    s9_off = s9_hits[0]
     s9_va = VM_BASE + s9_off
 
     # 10 & 11. omit 2-space paragraph prefix & style CoT body paragraphs with Faint + Italic (\x1b[2;3m)
@@ -1781,17 +1811,24 @@ def _resolve_spinner_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
          light_va - VM_BASE, bytes(len(detour)), detour)
 
     # 49i. One space between the star and the word. pendingLineView appends " " to the frame,
-    # `concatstring2(nil, frame, " ")` (`mov x2, x1; adrp x3; add x3; orr x4, xzr, #1; mov x1, x0;
-    # mov x0, xzr`), though the frame already ends in one; the appended string's length becomes 0.
+    # `concatstring2(nil, frame, " ")`, though the frame already ends in one; the appended string's
+    # length becomes 0. v1.5.15 places `mov x1, x0; mov x0, xzr` after `orr x4, xzr, #1` (`c - 12`);
+    # v1.5.16 places them before `adrp x3, " "`, leaving `orr x4, xzr, #1` right before the call (`c - 4`).
     pv = funcs["pendingLineView"]
-    cats = [c - 24 for c in _calls_to(data, pv, funcs["concatstring2"][0])
-            if word(c - 24) == 0xAA0103E2 and word(c - 20) & 0x9F00001F == 0x90000003
-            and data[decode_adrp_add(data, c - 20) - VM_BASE] == 0x20
-            and word(c - 12) in (0xB24003E4, 0xAA1F03E4)              # orr x4, xzr, #1 / mov x4, xzr
-            and bytes(data[c - 8 : c]) == bytes.fromhex("e10300aae0031faa")]  # mov x1, x0; mov x0, xzr
+    cats: list[int] = []
+    for c in _calls_to(data, pv, funcs["concatstring2"][0]):
+        if (word(c - 24) == 0xAA0103E2
+                and (va := _adrp_add_at(data, c - 20, 3)) is not None and data[va - VM_BASE] == 0x20
+                and word(c - 12) in (0xB24003E4, 0xAA1F03E4)
+                and bytes(data[c - 8 : c]) == bytes.fromhex("e10300aae0031faa")):
+            cats.append(c - 12)
+        elif ((va := _adrp_add_at(data, c - 12, 3)) is not None and data[va - VM_BASE] == 0x20
+              and word(c - 4) in (0xB24003E4, 0xAA1F03E4)
+              and word(c - 24) == 0xAA1F03E0):  # mov x0, xzr; mov x1, xR; mov x2, xS; adrp/add x3, " "; orr x4, #1
+            cats.append(c - 4)
     if len(cats) != 1:
         raise RuntimeError(f"pendingLineView: expected one `frame + \" \"`, found {len(cats)}")
-    o = cats[0] + 12
+    o = cats[0]
     site("model.(*ConversationModel).pendingLineView -> the frame keeps its one space; no second",
          o, stock_or_none(o, pack(0xAA1F03E4)), pack(0xAA1F03E4))
 
@@ -1800,20 +1837,37 @@ def _resolve_spinner_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
     # never move when a turn starts or ends; the gap follows that rule and makes the block two rows.
     # Every height reads the layout: View and messageListViewportHeight size the conversation as the
     # terminal's height less the sum of its fields, and populateLayout writes the pending row's into
-    # field 2 as `(m+0x5c760 == 0) + pendingDecoration's rows` (`cmp x2, #0; cset x2, eq; ...;
-    # add x2, x2, x3`). #49j counts that row twice: `add x2, x3, x2, lsl #1`. (Field 3, which an
-    # earlier version set to 2, holds the tip's row; a newline counted nowhere drew the line a row low
-    # and pushed the status line off the alternate screen.)
+    # field 2 as `(m+hidden == 0) + pendingDecoration's rows (+ pendingStepRowCount on v1.5.16+)` via
+    # `cmp xR, #0; cset xR, eq; ...; add xD, xR, xO`. #49j counts that row twice: `add xD, xO, xR, lsl #1`.
     pl = funcs["populateLayout"]
     deco = funcs["pendingDecoration"][0]
     rows = [c for c in _calls_to(data, pl, deco)]
-    adds = [o for c in rows for o in range(c + 4, c + 0x60, 4)
-            if word(o) == 0xF100005F and word(o + 4) == 0x9A9F17E2                  # cmp x2, #0; cset x2, eq
-            and word(o + 16) in (0x8B030042, 0x8B020462)]                            # add x2, x2, x3 (or patched)
+    adds: list[tuple[int, int]] = []
+    for c in rows:
+        for o in range(c + 4, min(pl[1] - 20, c + 0xC0), 4):
+            w0 = word(o)
+            if w0 & 0xFFFFFC1F != 0xF100001F:  # cmp xR, #0
+                continue
+            r = (w0 >> 5) & 0x1F
+            if word(o + 4) != (0x9A9F17E0 | r):  # cset xR, eq
+                continue
+            for delta in (8, 12, 16):
+                wa = word(o + delta)
+                # Stock: `add xD, xN, xM` (unshifted) or patched: `add xD, xO, xR, lsl #1`.
+                if wa & 0xFFE0FC00 == 0x8B000000:
+                    rd, rn, rm = wa & 0x1F, (wa >> 5) & 0x1F, (wa >> 16) & 0x1F
+                    if r in (rn, rm) and rn != rm and rd in (rn, rm):
+                        other = rm if rn == r else rn
+                        adds.append((o + delta, 0x8B000400 | (r << 16) | (other << 5) | rd))
+                        break
+                elif wa & 0xFFE0FC00 == 0x8B000400 and ((wa >> 16) & 0x1F) == r:
+                    adds.append((o + delta, wa))
+                    break
     if len(rows) != 1 or len(adds) != 1:
         raise RuntimeError(f"populateLayout: expected one pending-row reservation, found {len(adds)}")
+    add_off, add_patched = adds[0]
     site("model.(*ConversationModel).populateLayout -> the pending row is reserved twice: the gap, then the line",
-         adds[0] + 16, stock_or_none(adds[0] + 16, pack(0x8B020462)), pack(0x8B020462))
+         add_off, stock_or_none(add_off, pack(add_patched)), pack(add_patched))
 
     # 49k. The drawn rows match: every non-empty pending line leaves pendingLineView as "\n" + line.
     # Its tail joins `decoration + "\n" + line` only when a decoration exists (`bl pendingDecoration;
@@ -1901,6 +1955,7 @@ ELLIPSIS = "…"
 # The aside is a fixed gray, `#999999`, as Claude Code's is (sampled at `#989898`); faint dimmed the
 # foreground to `#646464`, a step darker than the word beside it needs.
 ELAPSED_FORMAT = b" \x1b[38;2;153;153;153m(%[2]s)%-[1]*.0[2]s\x1b[39m"  # one space after the verb, as a sentence
+ELAPSED_EMPTY_FORMAT = b"%-[1]*.0[2]s"  # fallback when `pad` cannot fit even the bare timer: prints `pad` plain spaces
 # By the state's kind (Site #50i): a thought, a tool call. Any other state shows the time alone.
 # `⋅` (U+22C5) is East Asian Width neutral, one column everywhere; `·` (U+00B7) is ambiguous, two
 # columns under a CJK locale, which the padding (one column per character) would not count.
@@ -1912,7 +1967,11 @@ ELAPSED_LONG_THOUGHT = " ⋅ deep in thought"  # a thought past LONG_TURN second
 # most 8 bytes, the one load the matcher compares.
 EFFORT_WORDS = (("(Low)", "low"), ("(Medium)", "medium"), ("(High)", "high"), ("(XHigh)", "xhigh"), ("(Max)", "max"))
 EFFORT_PHRASE = " with {} effort"
-ELAPSED_RESERVE = 50  # columns the text gives up: ` (120m 5s ⋅ deep in thought with medium effort)` and slack
+# Option C progressive budget: pendingLineView keeps only two static floors (R1 for statusSlot.fit,
+# R2 for the bare timer ` (12m 5s)` + 1-col breathing room) so verbs are never crushed on narrow
+# split panes; elapsedSuffix then selects the richest aside tier that fits in the remaining `pad`.
+STATUS_RESERVE = 36  # columns statusSlot.fit yields before the aside does (prefix + verb + bare/thinking)
+LABEL_RESERVE = 10   # columns the text reserves for a bare timer ` (12m 5s)` plus 1-col margin
 MOV_X6_XZR = 0xAA1F03E6
 
 
@@ -1958,19 +2017,41 @@ def _turn_start(data: bytes | bytearray, rf: tuple[int, int]) -> tuple[int, int,
     return stamp[0], stamp_va, ((hi_add >> 10) & 0xFFF) << 12 | ((lo_add >> 10) & 0xFFF)
 
 
-def _thought_states() -> list[str]:
-    """A thought's state by `long * (1 + len(EFFORT_WORDS)) + effort`, effort 0 when the label names none."""
-    efforts = [""] + [EFFORT_PHRASE.format(shown) for _, shown in EFFORT_WORDS]
-    return [base + e for base in (ELAPSED_STATES[3], ELAPSED_LONG_THOUGHT) for e in efforts]
+def _aside_tiers() -> list[tuple[bytes, int, int]]:
+    """Progressive aside tier table `(format_bytes, base_cols, fallback_id)` in strict topological order (`fb < id`).
 
-
-def _elapsed_formats() -> dict:
-    """The aside's formats: kind -> format for the states other than a thought, ("thought", i) for each
-    of a thought's states (_thought_states)."""
-    with_state = lambda st: ELAPSED_FORMAT.replace(b")%", st.encode() + b")%")
-    formats = {k: with_state(st) for k, st in ELAPSED_STATES.items() if k != 3}
-    formats.update({("thought", i): with_state(st) for i, st in enumerate(_thought_states())})
-    return formats
+    Every format uses the same 2-arg `fmt.Sprintf(fmt, trailing_pad, dur)` signature (`%-[1]*.0[2]s`).
+    `base_cols` is display columns excluding `len(dur)`: 3 for `" ()"`, plus `len(state_str)` (Unicode
+    `⋅` U+22C5 is 1 char and 1 display column). Fallback chains:
+      - other:      1 (bare) -> 0 (spaces)
+      - running:    2 (running) -> 1 (bare) -> 0 (spaces)
+      - think <60s: 3+e (think+eff) -> 3 (think) -> 1 (bare) -> 0 (spaces)
+      - think >=60s (no effort): 9 (deep) -> 3 (think) -> 1 (bare) -> 0 (spaces)
+      - think >=60s (effort e):  14+e (deep+eff) -> 9+e (think+eff) -> 9 (deep) -> 3 (think) -> 1 (bare) -> 0 (spaces)
+    """
+    fmt_for = lambda st: ELAPSED_FORMAT.replace(b")%", st.encode() + b")%")
+    n_words = len(EFFORT_WORDS)
+    assert n_words == 5, "select_aside indices assume 5 EFFORT_WORDS entries"
+    tiers: list[tuple[bytes, int, int]] = [
+        (ELAPSED_EMPTY_FORMAT, 0, 0),                                    # 0: spaces only (always fits)
+        (ELAPSED_FORMAT, 3, 0),                                          # 1: (6s)
+        (fmt_for(ELAPSED_STATES[4]), 3 + len(ELAPSED_STATES[4]), 1),     # 2: (6s ⋅ running)
+        (fmt_for(ELAPSED_STATES[3]), 3 + len(ELAPSED_STATES[3]), 1),     # 3: (6s ⋅ thinking)
+    ]
+    for _, shown in EFFORT_WORDS:                                        # 4..8: (6s ⋅ thinking with <e> effort)
+        st = ELAPSED_STATES[3] + EFFORT_PHRASE.format(shown)
+        tiers.append((fmt_for(st), 3 + len(st), 3))
+    tiers.append((fmt_for(ELAPSED_LONG_THOUGHT), 3 + len(ELAPSED_LONG_THOUGHT), 3))  # 9: (1m 5s ⋅ deep in thought)
+    for _, shown in EFFORT_WORDS:                                        # 10..14: (1m 5s ⋅ thinking with <e> effort) -> 9
+        st = ELAPSED_STATES[3] + EFFORT_PHRASE.format(shown)
+        tiers.append((fmt_for(st), 3 + len(st), 9))
+    for i, (_, shown) in enumerate(EFFORT_WORDS):                        # 15..19: (1m 5s ⋅ deep in thought with <e> effort) -> 10+i
+        st = ELAPSED_LONG_THOUGHT + EFFORT_PHRASE.format(shown)
+        tiers.append((fmt_for(st), 3 + len(st), 10 + i))
+    for idx, (_, base_cols, fb) in enumerate(tiers):
+        if idx > 0 and not (0 <= fb < idx and base_cols < 256):
+            raise RuntimeError(f"aside tier {idx} violates strict topological fallback order")
+    return tiers
 
 
 ELAPSED_CODE = 0x1E0  # executable leaf detours + effort matcher in __TEXT tail fill (tables & formats live in halloween.paint)
@@ -2030,14 +2111,14 @@ def _model_label_path(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]
 
 def _elapsed_detours(data: bytes | bytearray, funcs: dict[str, tuple[int, int]], fmt_off: int,
                      width_slot: int, dur_len_slot: int, secs_slot: int, conv: int, fmt_load: int) -> dict:
-    """Site #50i: elapsedSuffix's two detours, and the state formats they choose, before the Gemini strings.
+    """Site #50i: unified adaptive aside selector (`select_aside`) + effort matcher in `__TEXT` tail fill.
 
-    elapsedSuffix(m, pad) is called only from pendingLineView, which spilled m in its own frame; the
-    callee reads it there (`[sp + frame + m_slot]`), then the state's kind, which refreshActivityLabel
-    keeps on the model just before the turn's start. The width detour runs where elapsedSuffix loaded
-    the padding's width: width - len(time) - len("()" + state), never below 0. The format detour runs
-    where it loaded the format. A thought past LONG_TURN seconds reads `thinking longer`. Both are
-    leaves: no call, so no stack map is involved.
+    `elapsedSuffix(m, pad)` is called only from `pendingLineView`, which spilled `m` in its own frame
+    (`sp + frame + m_slot`) and leaves raw `pad` untouched in `width_slot`. Both Hook 1 (before `convT64`,
+    needing `x0 = trailing_pad`) and Hook 2 (before `fmt.Sprintf`, needing `x0, x1 = fmt_ptr, fmt_len`)
+    jump to the exact same `select_aside` leaf routine, walking the read-only tier table in `halloween.paint`
+    until `base_cols + dur_len < pad` (guaranteeing `trailing_pad >= 1` so `)` never collides with `status`
+    and total row width never wraps `termWidth`), falling back to tier 0 (`%-[1]*.0[2]s`, `pad` plain spaces).
     """
     word = lambda o: struct.unpack_from("<I", data, o)[0]
     pack = lambda *ws: b"".join(struct.pack("<I", w) for w in ws)
@@ -2048,46 +2129,42 @@ def _elapsed_detours(data: bytes | bytearray, funcs: dict[str, tuple[int, int]],
     kind = start - 0x10
     stores = [o for o, w in _words(data, (rf[0], rf[1] - 4))
               if w & 0xFFC0001F == 0x9140001B and word(o + 4) & 0xFFC003E0 == 0xF9000360
-              and ((w >> 10) & 0xFFF) << 12 | ((word(o + 4) >> 10) & 0xFFF) * 8 == kind]
+              and (((w >> 10) & 0xFFF) << 12) + ((word(o + 4) >> 10) & 0xFFF) * 8 == kind]
     if m_slot is None or not stores:
         raise RuntimeError("elapsedSuffix: pendingLineView's m spill or the model's state kind moved")
     if frame + m_slot > 0x7FF8 or (frame + m_slot) % 8 or kind >> 24 or (kind & 0xFFF) % 8:
         raise RuntimeError("elapsedSuffix: the caller's m or the state kind is out of reach of one load")
-    formats = _elapsed_formats()
+    tiers = _aside_tiers()
     base = _elapsed_base(data)
     va = VM_BASE + base
-    # Pure read-only data (effort match table, column-width table, format records, format strings) lives
+    # Pure read-only data (effort match table, 8-byte tier records, deduplicated format strings) lives
     # right after _gemini_fill in dead `halloween.paint`; __TEXT tail fill holds only executable leaf code.
     gemini_off, gemini_blob, _ = _gemini_fill(data, funcs)
     paint_end = funcs["halloweenPaint"][1]
     data_off = gemini_off + len(gemini_blob)
     data_va = VM_BASE + data_off
-    n_eff = 1 + len(EFFORT_WORDS)
     match_va = data_va
-    cols_va = match_va + 16 * (len(EFFORT_WORDS) + 1)
-    table_va = (cols_va + n_eff + 7) & ~7
-    fmts_va = table_va + 8 * (2 * n_eff)
-    at, pos = {}, fmts_va
-    for k, f in formats.items():
-        at[k] = pos
-        pos += len(f)
+    table_va = match_va + 16 * (len(EFFORT_WORDS) + 1)
+    fmts_va = table_va + 8 * len(tiers)
+    fmt_pos: dict[bytes, int] = {}
+    unique_fmts: list[bytes] = []
+    pos = fmts_va
+    for fmt_bytes, _, _ in tiers:
+        if fmt_bytes not in fmt_pos:
+            fmt_pos[fmt_bytes] = pos
+            unique_fmts.append(fmt_bytes)
+            pos += len(fmt_bytes)
     label = _model_label_path(data, funcs)
-    load_kind = lambda: pack(_ldr_sp(6, frame + m_slot),                                   # x6 = m (caller's spill)
-                             0x91400000 | ((kind >> 12) << 10) | (6 << 5) | 27,             # add x27, x6, #hi, lsl #12
-                             0xF9400366 | (((kind & 0xFFF) // 8) << 10))                    # ldr x6, [x27, #lo]
     movz = lambda rd, imm: 0xD2800000 | (imm << 5) | rd
     cmp = lambda rn, imm: 0xF100001F | (imm << 10) | (rn << 5)
     adr = lambda pc, target, rd: 0x10000000 | ((target - pc) & 3) << 29 | (((target - pc) >> 2) & 0x7FFFF) << 5 | rd
-    # Columns the aside takes beyond the 2 the width already left out: its one leading space, `()`, the state.
-    lead = len(ELAPSED_FORMAT) - len(ELAPSED_FORMAT.lstrip(b" "))
-    cols = lambda state: lead + len(state)
+    cbz_r = lambda rt, pc, target: 0xB4000000 | ((((target - pc) // 4) & 0x7FFFF) << 5) | rt
 
-    # The effort, from the model's label: x10 = m in, x12 = 0 (none) or 1 + its index in EFFORT_WORDS out,
-    # back through x15. A leaf reached by a branch, not a call. The label's last 8 bytes are compared
-    # with each suffix under a mask; a label shorter than 8 bytes names none.
-    def effort(at_va: int, table_va: int) -> bytes:
+    # The effort matcher: x10 = m in, x12 = 0 (none) or 1..5 out, returns via `br x15`.
+    # Touches only x9..x14; preserves x0..x8 (including x5 = select_aside's return address).
+    def effort(at_va: int, match_table_va: int) -> bytes:
         ldr = lambda rt, rn, off: 0xF9400000 | (off // 8) << 10 | rn << 5 | rt
-        cbz = lambda rt, i, j: 0xB4000000 | ((j - i) & 0x7FFFF) << 5 | rt               # word i -> word j
+        cbz = lambda rt, i, j: 0xB4000000 | ((j - i) & 0x7FFFF) << 5 | rt
         bcond = lambda i, j, c: 0x54000000 | ((j - i) & 0x7FFFF) << 5 | c
         LOOP, NONE, OUT = 15, 22, 23
         words = [
@@ -2097,60 +2174,100 @@ def _elapsed_detours(data: bytes | bytearray, funcs: dict[str, tuple[int, int]],
             0xA9400000 | (label["label"] // 8) << 15 | 13 << 10 | 10 << 5 | 11,           # ldp x11, x13, [x10, #label]
             cmp(13, 8), bcond(9, OUT, 0xB),                                              # cmp x13, #8; b.lt out
             0x8B0D016B, 0xF85F816E,                                                      # add x11, x11, x13; ldur x14, [x11, #-8]
-            None, None, movz(12, 1),                                                     # x13 = the suffix table; x12 = 1
+            None, None, movz(12, 1),                                                     # x13 = match table; x12 = 1
             0xA8C125AA, cbz(9, 16, NONE), 0x8A0901C9, 0xEB0A013F, bcond(19, OUT, 0x0),   # loop: ldp x10, x9, [x13], #16; and; cmp
             0x9100058C, 0x14000000 | ((LOOP - 21) & 0x3FFFFFF),                         # x12 += 1; b loop
             0xAA1F03EC, 0xD61F01E0,                                                      # none: x12 = 0; out: br x15
         ]
-        adrp_add = encode_adrp_add(at_va + 12 * 4, table_va, 13)
-        words[12:14] = struct.unpack("<II", adrp_add)
+        words[12:14] = struct.unpack("<II", encode_adrp_add(at_va + 12 * 4, match_table_va, 13))
         if len(words) != 24:
             raise RuntimeError("the effort matcher's layout drifted")
         return pack(*words)
 
-    states = {k: v for k, v in formats.items() if isinstance(k, int)}
-    width = load_kind() + pack(
-        _ldr_sp(0, width_slot), _ldr_sp(7, dur_len_slot), 0xCB070000,                    # x0 = width - len(time)
-        movz(7, cols("")))
-    for k in states:
-        width += pack(cmp(6, k), movz(8, cols(ELAPSED_STATES[k])), 0x9A870107)          # cmp x6, #k; x7 = k ? cols : x7
-    width += pack(cmp(6, 3), movz(8, cols(ELAPSED_STATES[3])), 0x9A870107)
-    here = va + len(width)                                                               # a long thought: wider
-    width += pack(cmp(6, 3)) + encode_b_cond(here + 4, here + 24, 0x1)
-    width += pack(_ldr_sp(9, secs_slot), cmp(9, LONG_TURN)) + encode_b_cond(here + 16, here + 24, 0xB)
-    width += pack(movz(7, cols(ELAPSED_LONG_THOUGHT)))
-    here = va + len(width)                                                               # a thought: its effort's words
-    width_eff = here + 4 * 2
-    width += pack(cmp(6, 3)) + encode_b_cond(here + 4, here + 4 * 9, 0x1)
-    width += pack(_ldr_sp(10, frame + m_slot), adr(here + 12, here + 20, 15))
-    width += b"EFFW"                                                                     # b effort (patched below)
-    width += b"COLT" * 2 + pack(0x386C6928, 0x8B0800E7)                                   # x9 = cols table; ldrb w8, [x9, x12]; add x7, x7, x8
-    width += pack(0xEB070000, 0x9A9FC000)                                                 # subs x0, x0, x7; csel x0, x0, xzr, gt
-    width += encode_b(va + len(width), VM_BASE + conv)                                    # back to `bl convT64`
-    fmt_va = va + len(width)
-    fmt = load_kind() + encode_adrp_add(fmt_va + 12, VM_BASE + fmt_off, 0) + pack(movz(1, len(ELAPSED_FORMAT)))
-    for k in states:
-        if k == 3:
-            continue
-        here = fmt_va + len(fmt)
-        fmt += pack(cmp(6, k)) + encode_b_cond(here + 4, here + 20, 0x1)                  # cmp; b.ne past
-        fmt += encode_adrp_add(here + 8, at[k], 0) + pack(movz(1, len(formats[k])))
-    here = fmt_va + len(fmt)                                                             # a thought: by length, then effort
-    fmt += pack(cmp(6, 3)) + encode_b_cond(here + 4, here + 4 * 15, 0x1)               # not a thought: out
-    fmt += pack(_ldr_sp(10, frame + m_slot), adr(here + 12, here + 20, 15)) + b"EFFF"
-    fmt += pack(_ldr_sp(9, secs_slot), cmp(9, LONG_TURN), movz(14, n_eff),
-                0x9A9FA1CE, 0x8B0E018C)                                                   # csel x14, x14, xzr, ge; add x12, x12, x14
-    fmt += b"FMTT" * 2 + pack(0x8B0C0D49, 0x2940052B, 0x8B0B0140)                          # x10 = table; x9 = x10 + x12*8; ldp w11, w1; x0 = x10 + w11
-    fmt += encode_b(fmt_va + len(fmt), VM_BASE + fmt_load + 12)                          # back to `add x2, sp, #args`
-    eff_va = fmt_va + len(fmt)
+    # Layout in __TEXT tail fill:
+    #   width_entry (12B) | fmt_entry (20B) | select_aside (144B) | effort (96B)
+    width_va = va
+    fmt_va = width_va + 12
+    sel_va = fmt_va + 20
+
+    width_entry = (
+        pack(adr(width_va, width_va + 8, 15))
+        + encode_b(width_va + 4, sel_va)
+        + encode_b(width_va + 8, VM_BASE + conv)                                        # x0 = trailing_pad -> bl convT64
+    )
+    fmt_entry = (
+        pack(adr(fmt_va, fmt_va + 8, 15))
+        + encode_b(fmt_va + 4, sel_va)
+        + pack(0xAA0103E0, 0xAA0203E1)                                                   # mov x0, x1; mov x1, x2
+        + encode_b(fmt_va + 16, VM_BASE + fmt_load + 12)                                 # -> add x2, sp, #args
+    )
+
+    # select_aside: returns (x0 = trailing_pad, x1 = fmt_ptr, x2 = fmt_len) via `br x5`.
+    # Step A+B (20 insns = 80B): load m/kind, resolve initial tier index in x12.
+    # Offsets from sel_va:
+    #   +0x00: ldr x10, [sp, frame+m_slot]; add x27, x10, #hi; ldr x6, [x27, #lo]
+    #   +0x0c: mov x5, x15; mov x12, #1; cmp x6, #4; mov x8, #2; csel x12, x8, x12, eq
+    #   +0x20: cmp x6, #3; b.ne loop_setup (+0x50)
+    #   +0x28: adr x15, after_eff (+0x30); b effort
+    #   +0x30: ldr x9, [sp, secs_slot]; cmp x9, #LONG_TURN; b.ge is_long (+0x40)
+    #   +0x3c: add x12, x12, #3; b loop_setup (+0x50)  -> wait: 2 insns -> is_long at +0x44!
+    # Let's compute exact PCs dynamically with a tiny label-free builder.
+    sel = bytearray()
+    cur = lambda: sel_va + len(sel)
+    sel += pack(
+        _ldr_sp(10, frame + m_slot),                                                     # x10 = m
+        0x91400000 | ((kind >> 12) << 10) | (10 << 5) | 27,                              # add x27, x10, #hi, lsl #12
+        0xF9400366 | (((kind & 0xFFF) // 8) << 10),                                      # ldr x6, [x27, #lo]  (kind)
+        0xAA0F03E5,                                                                      # mov x5, x15 (save return addr)
+        movz(12, 1),                                                                     # x12 = 1 (bare timer)
+        cmp(6, 4), movz(8, 2), 0x9A8C010C,                                               # if kind == 4: x12 = 2 (running)
+        cmp(6, 3),                                                                       # thinking?
+    )
+    bne_loop_at = len(sel)
+    sel += b"BNEL"                                                                       # b.ne loop_setup
+    sel += pack(adr(cur(), cur() + 8, 15))
+    b_eff_at = len(sel)
+    sel += b"BEFF"                                                                       # b effort -> x12 = 0..5
+    sel += pack(_ldr_sp(9, secs_slot), cmp(9, LONG_TURN))                                # secs >= 60?
+    bge_long_at = len(sel)
+    sel += b"BGEL"                                                                       # b.ge is_long
+    sel += pack(0x91000D8C)                                                              # add x12, x12, #3 (short: 3..8)
+    b_loop_at = len(sel)
+    sel += b"BLOP"                                                                       # b loop_setup
+    is_long_va = cur()
+    sel += pack(
+        0x91003988,                                                                      # add x8, x12, #14 (long+eff: 15..19)
+        cmp(12, 0), movz(12, 9), 0x9A88018C,                                             # x12 = (eff==0) ? 9 : 14+eff
+    )
+    loop_setup_va = cur()
+    sel += encode_adrp_add(cur(), table_va, 10)                                          # x10 = &records[0]
+    sel += pack(_ldr_sp(1, width_slot), _ldr_sp(2, dur_len_slot))                        # x1 = raw pad; x2 = dur_len
+    loop_va = cur()
+    sel += pack(0x8B0C0D49)                                                              # add x9, x10, x12, lsl #3
+    cbz_empty_at = len(sel)
+    sel += b"CBZE"                                                                       # cbz x12, empty_hit
+    sel += pack(0x39401927, 0x8B0200E7, 0xEB070020)                                      # ldrb w7,[x9,#6]; add x7,x7,x2; subs x0,x1,x7
+    bgt_hit_at = len(sel)
+    sel += b"BGTH"                                                                       # b.gt hit (fits with >=1 space margin)
+    sel += pack(0x39401D2C)                                                              # ldrb w12, [x9, #7] (fallback id)
+    sel += encode_b(cur(), loop_va)
+    empty_hit_va = cur()
+    sel += pack(0xAA0103E0)                                                              # mov x0, x1 (trailing_pad = pad)
+    hit_va = cur()
+    sel += pack(0xB940012B, 0x79400922, 0x8B0B0141, 0xD61F00A0)                          # ldr w11,[x9]; ldrh w2,[x9,#4]; add x1,x10,x11; br x5
+
+    eff_va = sel_va + len(sel)
     eff = effort(eff_va, match_va)
     if len(eff) != 4 * 24:
         raise RuntimeError(f"the effort matcher takes {len(eff)}B, not the 96B laid out")
-    width = (width.replace(b"EFFW", encode_b(width_eff + 8, eff_va))
-                  .replace(b"COLT" * 2, encode_adrp_add(width_eff + 12, cols_va, 9)))
-    f_eff = fmt_va + fmt.index(b"EFFF")
-    fmt = (fmt.replace(b"EFFF", encode_b(f_eff, eff_va))
-              .replace(b"FMTT" * 2, encode_adrp_add(fmt_va + fmt.index(b"FMTT"), table_va, 10)))
+
+    sel[bne_loop_at : bne_loop_at + 4] = encode_b_cond(sel_va + bne_loop_at, loop_setup_va, 0x1)
+    sel[b_eff_at : b_eff_at + 4] = encode_b(sel_va + b_eff_at, eff_va)
+    sel[bge_long_at : bge_long_at + 4] = encode_b_cond(sel_va + bge_long_at, is_long_va, 0xA)
+    sel[b_loop_at : b_loop_at + 4] = encode_b(sel_va + b_loop_at, loop_setup_va)
+    sel[cbz_empty_at : cbz_empty_at + 4] = pack(cbz_r(12, sel_va + cbz_empty_at, empty_hit_va))
+    sel[bgt_hit_at : bgt_hit_at + 4] = encode_b_cond(sel_va + bgt_hit_at, hit_va, 0xC)
+
     matches = b""
     for suffix, _ in EFFORT_WORDS:
         raw = suffix.encode()
@@ -2159,17 +2276,18 @@ def _elapsed_detours(data: bytes | bytearray, funcs: dict[str, tuple[int, int]],
         mask = ((1 << 64) - 1) ^ ((1 << (8 * (8 - len(raw)))) - 1)
         matches += struct.pack("<QQ", int.from_bytes(raw.rjust(8, b"\0"), "little") & mask, mask)
     matches += bytes(16)
-    effort_cols = bytes([0] + [len(EFFORT_PHRASE.format(shown)) for _, shown in EFFORT_WORDS])
-    records = b"".join(struct.pack("<II", at[("thought", i)] - table_va, len(formats[("thought", i)]))
-                       for i in range(2 * n_eff))
-    code = width + fmt + eff
+    records = b"".join(
+        struct.pack("<IHBB", fmt_pos[fmt_bytes] - table_va, len(fmt_bytes), base_cols, fb)
+        for fmt_bytes, base_cols, fb in tiers
+    )
+    code = width_entry + fmt_entry + bytes(sel) + eff
     if len(code) > ELAPSED_CODE:
         raise RuntimeError(f"elapsedSuffix's detours take {len(code)}B, more than the {ELAPSED_CODE}B laid out")
-    data_raw = matches + effort_cols.ljust(table_va - cols_va, b"\0") + records + b"".join(formats.values())
+    data_raw = matches + records + b"".join(unique_fmts)
     data_blob = data_raw.ljust((len(data_raw) + 3) & ~3, b"\0")
     if data_off + len(data_blob) > paint_end:
         raise RuntimeError(f"halloween.paint has {paint_end - data_off}B left; elapsedSuffix data needs {len(data_blob)}B")
-    return {"width": va, "format": fmt_va, "code": code, "code_va": va, "data": data_blob, "data_off": data_off}
+    return {"width": width_va, "format": fmt_va, "code": code, "code_va": va, "data": data_blob, "data_off": data_off}
 
 
 def _resolve_elapsed_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
@@ -2182,23 +2300,55 @@ def _resolve_elapsed_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
     def site(name: str, off: int, patched: bytes) -> None:
         sites.append(PatchSite("pending-line", name, VM_BASE + off, off, _recoverable(data, off, patched), patched))
 
-    # 50a. pendingLineView: `concatstring2(nil, text, "...")` (`adrp x3; add x3; orr x4, xzr, #3`). The three
-    # dots become one ellipsis, three bytes too, from a `…` already in the binary.
+    # 50a. pendingLineView (+ fitPendingLabel on v1.5.16+): `concatstring2(nil, text, "...")`
+    # (`adrp x3; add x3; orr x4, xzr, #3`). The three dots become one ellipsis, three bytes too,
+    # from a `…` already in the binary. On v1.5.16+, pendingLineView measures width using `dots[0]`
+    # (`elapsedStr == ""`) and delegates the rendered text to `model.fitPendingLabel`.
     ell = ELLIPSIS.encode()
     ro_lo, ro_hi = _section_file_bounds(data, "__TEXT", "__rodata")
     ell_pos = data.find(ell, ro_lo, ro_hi)
     if ell_pos == -1 or ell_pos >= _text_tail_cave(data)[0]:
         raise RuntimeError("no `…` in __TEXT to point the pending line's ellipsis at")
     ell_va = VM_BASE + ell_pos
-    dots = [
-        o for o, w in _words(data, (pv[0], pv[1] - 12))
-        if w & 0x9F00001F == 0x90000003 and bytes(data[decode_adrp_add(data, o) - VM_BASE :][:3]) in (b"...", ell)
+    find_dots = lambda bounds: [
+        o for o, w in _words(data, (bounds[0], bounds[1] - 12))
+        if w & 0x9F00001F == 0x90000003
+        and (va := _adrp_add_at(data, o, 3)) is not None
+        and bytes(data[va - VM_BASE : va - VM_BASE + 3]) in (b"...", ell)
         and word(o + 8) == 0xB24007E4  # orr x4, xzr, #3
     ]
-    if len(dots) != 1:
-        raise RuntimeError(f"pendingLineView: expected one `text + \"...\"`, found {len(dots)}")
+    dots = find_dots(pv)
+    if len(dots) not in (1, 2):
+        raise RuntimeError(f"pendingLineView: expected 1 or 2 `text + \"...\"`, found {len(dots)}")
     site("model.(*ConversationModel).pendingLineView -> `…` after the text, not `...`", dots[0],
          encode_adrp_add(VM_BASE + dots[0], ell_va, 3))
+    if "fitPendingLabel" in funcs:
+        fpl = funcs["fitPendingLabel"]
+        fpl_dots = find_dots(fpl)
+        if not fpl_dots or word(fpl_dots[0] - 8) & 0xFF00001F != 0xB5000004:  # cbnz x4, with_elapsed
+            raise RuntimeError(f"fitPendingLabel: expected `text + \"...\"` after `cbnz x4`, found {len(fpl_dots)}")
+        site("model.fitPendingLabel -> `…` after the text, not `...`", fpl_dots[0],
+             encode_adrp_add(VM_BASE + fpl_dots[0], ell_va, 3))
+
+    # 50j (v1.5.16+). pendingLineView: suppress upstream's per-phase `activityPhaseTimer` shimmer suffix
+    # (`Thinking... 5s`) so only our turn-wide `#999999` aside (`(12s ⋅ thinking with high effort)`) shows.
+    # Stock tests `tbz wR, #0, timer_path; mov x1, xzr; mov x0, xzr; b after` before `(*activityPhaseTimer).elapsed`;
+    # NOPing the `tbz` always takes the existing empty-`elapsedStr` fast path.
+    if "activityPhaseTimerElapsed" in funcs:
+        el_calls = _calls_to(data, pv, funcs["activityPhaseTimerElapsed"][0])
+        if len(el_calls) != 1:
+            raise RuntimeError(f"pendingLineView: expected one activityPhaseTimer.elapsed call, found {len(el_calls)}")
+        el_c = el_calls[0]
+        skips = [
+            o for o in range(max(pv[0], el_c - 0x60), el_c - 12, 4)
+            if (word(o) & 0xFFF80000 == 0x36000000 or bytes(data[o : o + 4]) == NOP)
+            and word(o + 4) == 0xAA1F03E1 and word(o + 8) == 0xAA1F03E0  # mov x1, xzr; mov x0, xzr
+            and word(o + 12) >> 26 == 0x05  # b after_timer
+        ]
+        if len(skips) != 1:
+            raise RuntimeError(f"pendingLineView: expected one activityPhaseTimer gate before elapsed, found {len(skips)}")
+        site("model.(*ConversationModel).pendingLineView -> suppress upstream phase timer (keep turn-wide aside)",
+             skips[0], NOP)
 
     # 50b. refreshActivityLabel: `cmp x3, #7; b.eq stamp` -> `cmp x3, #0; b.ne stamp`. The stamp keeps a
     # start already set, so it now marks when the agent went busy; idle clears it.
@@ -2286,10 +2436,9 @@ def _resolve_elapsed_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
 
     put(entry, head + ELAPSED_FORMAT.ljust(sub - fmt_off, b"\x00"))
     put(sub, encode_bl(VM_BASE + sub, VM_BASE + funcs["timeSince"][0]))
-    put(lab - 8, pack(_ldr_sp(0, l_slot[1]), 0xF1000800, 0x9A9FC000,  # width = max(pad - 2, 0)
-                      _str_sp(31, p_slot[1]), _str_sp(0, l_slot[1])))  # the label's pointer slot: nil
-    # 50i. The aside's width and format depend on the state, which elapsedSuffix(m, pad) reads itself:
-    # two leaf detours in the __TEXT fill, one for the padding's width, one for the format.
+    put(lab - 8, pack(0xD503201F, 0xD503201F, 0xD503201F,            # nop × 3 (keep raw `pad` in l_slot)
+                      _str_sp(31, p_slot[1]), 0xD503201F))           # the label's pointer slot: nil; nop
+    # 50i. Unified adaptive aside selector (`select_aside`) in __TEXT fill + tier table in halloween.paint.
     detours = _elapsed_detours(data, funcs, fmt_off, l_slot[1], dur_len, slot(secs)[1], conv, fmt_load)
     put(conv - 8, encode_b(VM_BASE + conv - 8, detours["width"]) + NOP
         + encode_bl(VM_BASE + conv, VM_BASE + funcs["convT64"][0])
@@ -2316,7 +2465,8 @@ def _resolve_elapsed_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
         raise RuntimeError("pendingLineView: the receiver spill is gone")
     reserve = [
         o for o, w in _words(data, pv)
-        if w & 0xFFC00000 == 0xD1000000 and ((w >> 10) & 0xFFF) in (3, ELAPSED_RESERVE)
+        if w & 0xFFC00000 == 0xD1000000 and ((w >> 5) & 0x1F) != 31
+        and ((w >> 10) & 0xFFF) in (3, STATUS_RESERVE, LABEL_RESERVE, 50)
     ]
     if len(reserve) != 2:
         raise RuntimeError(f"pendingLineView: expected 2 `width - 3` truncation budgets, found {len(reserve)}")
@@ -2334,10 +2484,10 @@ def _resolve_elapsed_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, 
     pad_rn = (word(rp - 20) >> 5) & 0x1F
     site("model.(*ConversationModel).pendingLineView -> lay out text, suffix, status even with no status",
          gate[0], NOP)
-    site(f"model.(*ConversationModel).pendingLineView -> statusSlot.fit gives {ELAPSED_RESERVE} columns to the suffix",
-         reserve[0], pack((word(reserve[0]) & 0xFFC003FF) | (ELAPSED_RESERVE << 10)))
-    site(f"model.(*ConversationModel).pendingLineView -> the text gives {ELAPSED_RESERVE} columns to the suffix",
-         trunc_reserve, pack((word(trunc_reserve) & 0xFFC003FF) | (ELAPSED_RESERVE << 10)))
+    site(f"model.(*ConversationModel).pendingLineView -> statusSlot.fit gives {STATUS_RESERVE} columns to the suffix",
+         reserve[0], pack((word(reserve[0]) & 0xFFC003FF) | (STATUS_RESERVE << 10)))
+    site(f"model.(*ConversationModel).pendingLineView -> the text gives {LABEL_RESERVE} columns to the bare timer",
+         trunc_reserve, pack((word(trunc_reserve) & 0xFFC003FF) | (LABEL_RESERVE << 10)))
     site("model.(*ConversationModel).pendingLineView -> padding comes from elapsedSuffix(m, pad)", rp - 16,
          pack(0x9A9FA001 | (pad_rn << 5), _ldr_sp(0, m_slot), 0xAA1F03E2, 0xAA1F03E5)  # csel x1, xPad, xzr, ge; m; x2 = x5 = nil
          + encode_bl(VM_BASE + rp, VM_BASE + cl[0]))
@@ -2769,12 +2919,10 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
     if after_bail < bail + 0x14:
         raise RuntimeError("stepContent: inline running-step bail-out is too small for Site #53c")
 
-    # The collapsed path, where Site #8's `tbz w3, #0` sends an item that is not expanded. Its first 0x64
+    # The collapsed path, where Site #8's `tbz wR, #0` sends an item that is not expanded. Its first 0x60/0x64
     # bytes build the header's `Sprintf` arguments; they now hold the `∴ ` header (#54a) and expanded-gated
     # token count test (#54d).
-    s8 = find_unique_anchor(data, sc, bytes.fromhex("e20300aa04000014e10f40b2"), "Site 8 (stepContent expanded CoT check)") + 0x10
-    if word(s8) & 0xFFF8001F != 0x36000003:
-        raise RuntimeError("stepContent: the expanded test is no longer `tbz w3, #0` (an old patch with Site #8?)")
+    s8, hdr_reg, _ = _find_step_content_s8(data, sc)
     span = branch_target(word(s8), s8)
 
     # The live branch also tests `expanded` (`add x27, sp, ...; ldrb wR, [x27, #exp]; tbz wR, #0, one_liner`)
@@ -2827,10 +2975,15 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
         raise RuntimeError(f"stepContent: expected one store of the CoT header, found {len(stores)}")
     body = stores[0] + 12
 
-    hdr_call = span + 0x64
-    if not (calls(hdr_call, "fmtSprintf") or calls(hdr_call, "concatstring2")) or not calls(span + 0xB4, "styleRender"):
+    hdr_calls = [o for o in range(span + 0x40, min(sc[1] - 0x54, span + 0x80), 4)
+                 if calls(o, "fmtSprintf") or calls(o, "concatstring2")]
+    if len(hdr_calls) != 1 or not calls(hdr_calls[0] + 0x50, "styleRender"):
         raise RuntimeError("stepContent: the collapsed CoT header is no longer `Render(Sprintf(...))`")
-    if calls(hdr_call, "fmtSprintf") and (not calls(span + 0x30, "convTstring") or entered_from_outside(span, hdr_call, sc)):
+    hdr_call = hdr_calls[0]
+    if calls(hdr_call, "fmtSprintf") and (
+        not any(calls(o, "convTstring") for o in range(span, hdr_call, 4))
+        or entered_from_outside(span, hdr_call, sc)
+    ):
         raise RuntimeError("stepContent: the collapsed CoT header code changed")
     # The snippet: `bl collapsedThinkingSnippet`, `concatstring2("  ", snippet)` (+0x28, prefix length at
     # +0x10), rendered, then `concatstring3(header, "\n", snippet)` (+0xa4, separator length at +0x8c).
@@ -2849,30 +3002,40 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
         raise RuntimeError("stepContent: the collapsed CoT snippet is no longer skipped beside an answer")
 
     # The token count: `fmtDuration` twice in the header code, first for `Thought for %s, %s tokens` and
-    # then for `Thought for %s`, each after `mov x0, x1`; before the first, `add x27, sp, #hi, lsl #12;
-    # ldr x2, [x27, #tokens]; cbz x2, plain` (stock) or `add x27; ldrb w2, [x27, #exp]; b cave` (patched).
+    # then for `Thought for %s`. On v1.5.15 each is preceded by `mov x0, x1` and tokens load into x2;
+    # on v1.5.16+ `sec` is already in x0 (no `mov`) and tokens load into x1.
     durs = _calls_to(data, (full, span), funcs["fmtDuration"][0])
-    if len(durs) != 2 or word(durs[0] - 4) != 0xAA0103E0 or word(durs[1] - 4) != 0xAA0103E0:
+    if len(durs) != 2:
         raise RuntimeError("stepContent: the CoT header no longer formats its duration in two places")
-    tok, plain, tok_at = durs[0] - 4, durs[1] - 4, durs[0] - 0x10
-    exp_load = (exp_hi, exp_ld | 2)
-    if word(tok_at + 8) & 0xFF00001F == 0xB4000002 and branch_target(word(tok_at + 8), tok_at + 8) == plain:
+    if word(durs[0] - 4) == 0xAA0103E0 and word(durs[1] - 4) == 0xAA0103E0:
+        tok, plain = durs[0] - 4, durs[1] - 4
+    else:
+        tok, plain = durs[0], durs[1]
+    tok_at = tok - 0x0C
+    w_br = word(tok_at + 8)
+    if w_br & 0xFF000000 == 0xB4000000 and branch_target(w_br, tok_at + 8) == plain:
+        tok_reg = w_br & 0x1F
         tok_load = (word(tok_at), word(tok_at + 4))
-    elif (word(tok_at), word(tok_at + 4)) == exp_load and branch_target(word(tok_at + 8), tok_at + 8) == span + 0x20:
+        if tok_load[0] & 0xFF8003FF != 0x910003FB or (tok_load[1] & 0x1F) != tok_reg:
+            raise RuntimeError("stepContent: unexpected token-count load before `cbz`")
+    elif word(tok_at) == exp_hi and (word(tok_at + 4) & ~0x1F) == exp_ld and branch_target(w_br, tok_at + 8) == span + 0x20:
+        tok_reg = word(tok_at + 4) & 0x1F
         tok_load = (word(span + 0x24), word(span + 0x28))
-    elif branch_target(word(tok_at + 8), tok_at + 8) == span + 0x44:  # pre-decouple patched binary (`--status`)
+    elif branch_target(w_br, tok_at + 8) == span + 0x44:  # pre-decouple patched binary (`--status`)
+        tok_reg = 2
         tok_load = (word(span + 0x4C), word(span + 0x50))
     else:
         raise RuntimeError("stepContent: the CoT header no longer tests its token count")
+    exp_load = (exp_hi, exp_ld | tok_reg)
 
     # The span: [0x00..0x20) collapsed header (#54a), [0x20..0x34) expanded-gated token count (#54d).
     v = lambda o: VM_BASE + o
-    collapsed = (pack(0xAA0203E3, 0xAA0103E4)                                       # mov x3, x2; mov x4, x1
+    collapsed = (pack(0xAA0003E3 | (hdr_reg << 16), 0xAA0103E4)                      # mov x3, x<hdr>; mov x4, x1
                  + encode_adr(v(span + 0x08), v(span + 0x18), 1)                     # adr x1, "∴ "
                  + pack(0xD2800082, 0xAA1F03E0)                                     # mov x2, #4; mov x0, xzr
                  + encode_b(v(span + 0x14), v(hdr_call)) + THOUGHT_MARK + NOP)
-    tokens = (pack(tbz(span + 0x20, plain, 2), *tok_load,                            # tbz w2, #0, plain; ldr x2, tokens
-                   cond(span + 0x2C, plain, 0xB4000002))                             # cbz x2, plain
+    tokens = (pack(tbz(span + 0x20, plain, tok_reg), *tok_load,                      # tbz wR, #0, plain; ldr xR, tokens
+                   cond(span + 0x2C, plain, 0xB4000000 | tok_reg))                   # cbz xR, plain
               + encode_b(v(span + 0x30), v(tok)))
     assert (len(collapsed), len(tokens)) == (0x20, 0x14)
 

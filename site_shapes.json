@@ -27,7 +27,8 @@
   "c9ecc984c52e940d"
  ],
  "halloween.paint -> elapsedSuffix's effort tables and state formats": [
-  "6a494d4b967bcd33"
+  "6a494d4b967bcd33",
+  "7f0e122f831f0af2"
  ],
  "halloween.paint -> the breathing star's frames, the Gemini band, the long-turn colors, the pending line's verbs, and the tool marks": [
   "28119556bb8e78ec"
@@ -59,8 +60,12 @@
   "31f67de5b61bc245",
   "a0dc4cf363fa4169"
  ],
- "model.(*ConversationModel).pendingLineView -> statusSlot.fit gives 50 columns to the suffix": [
-  "700bab2bd91b5f7d"
+ "model.(*ConversationModel).pendingLineView -> statusSlot.fit gives 36 columns to the suffix": [
+  "700bab2bd91b5f7d",
+  "292db247e03a3690"
+ ],
+ "model.(*ConversationModel).pendingLineView -> suppress upstream phase timer (keep turn-wide aside)": [
+  "e6d70394d0931476"
  ],
  "model.(*ConversationModel).pendingLineView -> the frame keeps its one space; no second": [
   "db453276c8697538"
@@ -68,15 +73,15 @@
  "model.(*ConversationModel).pendingLineView -> the join sets up in the gap's leaf": [
   "3ada1dca97c0867c"
  ],
- "model.(*ConversationModel).pendingLineView -> the text gives 50 columns to the suffix": [
-  "f103475e6f4e3e49",
+ "model.(*ConversationModel).pendingLineView -> the text gives 10 columns to the bare timer": [
   "bdc5c2efa50a15de"
  ],
  "model.(*ConversationModel).pinHeader -> 1-line sticky header height": [
   "bdc5c2efa50a15de"
  ],
  "model.(*ConversationModel).populateLayout -> the pending row is reserved twice: the gap, then the line": [
-  "4d2d01ff8b3778d9"
+  "4d2d01ff8b3778d9",
+  "2825fb056c5421a1"
  ],
  "model.(*ConversationModel).refreshActivityLabel -> stamp the start for every busy state": [
   "491baecbde00f3eb"
@@ -98,6 +103,9 @@
  ],
  "model.compactingLabel -> elapsedSuffix(m, pad): ` (8s ⋅ thinking)`, faint, of the time since the start": [
   "2a39830d19abab52"
+ ],
+ "model.fitPendingLabel -> `…` after the text, not `...`": [
+  "00301e07eb8dfd89"
  ],
  "modelapiccpa.(*Client).Generate -> route nil FeatureProvider through keepAlivePings": [
   "5098056eaa9c4f98"
@@ -269,7 +277,8 @@
   "109e31809051f362"
  ],
  "render.stepContent -> a collapsed thought's header is `∴ <header>`": [
-  "73e261ce1ae0a367"
+  "73e261ce1ae0a367",
+  "b6705b4978b8348a"
  ],
  "render.stepContent -> a running thought in the full branch: empty header, straight to the body": [
   "e03822a46af53499",
@@ -279,7 +288,8 @@
   "1822be489bb36d69"
  ],
  "render.stepContent -> collapsed thoughts leave out the token count; expanded ones keep it": [
-  "56987dfab69979af"
+  "56987dfab69979af",
+  "df24c02cb290d6d6"
  ],
  "render.stepContent -> mutate CoT header `▾ Thought...` to `∴ Thought...`": [
   "d04e3cf1d7f67001"
@@ -288,7 +298,8 @@
   "502fe14213700ba3"
  ],
  "render.stepContent -> the CoT header asks whether the thought is expanded before its token count": [
-  "b15032230242ce1b"
+  "b15032230242ce1b",
+  "079d4b1e169c1922"
  ],
  "render.stepContent -> the collapsed header's `Sprintf` becomes `concatstring2`": [
   "c9ecc984c52e940d"
@@ -329,10 +340,19 @@
  "render.toolMarker @+0x224 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
+ "render.toolMarker @+0x22c -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
  "render.toolMarker @+0x288 -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.toolMarker @+0x294 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.toolMarker @+0x29c -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "render.toolMarker @+0x30c -> `⋆`": [
   "00301e07eb8dfd89"
  ],
  "render.workflowAgentRow @+0x150 -> `⊹`": [

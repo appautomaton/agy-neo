@@ -55,9 +55,9 @@ use_local_gateway() {
   export AGY_LLM_GATEWAY_WIRE_PROTOCOL="${AGY_LLM_GATEWAY_WIRE_PROTOCOL:-genai}"
   export AGY_LLM_GATEWAY_MODELS="${AGY_LLM_GATEWAY_MODELS:-gemini-4-neon-low,gemini-4-neon-medium,gemini-4-neon-high,gemini-4-neon-xhigh,gemini-4-carbon-low,gemini-4-carbon-medium,gemini-4-carbon-high,gemini-4-argon-low,gemini-4-argon-medium,gemini-4-argon-high,gemini-4-hydrogen-low,gemini-4-hydrogen-medium,gemini-4-hydrogen-high,gemini-4-hydrogen-xhigh,gemini-3.8-flash-medium,gemini-3.8-flash-high}"
   # Background tiers: titles and command safety checks (flash_lite), subagents (flash, pro).
-  export AGY_LLM_GATEWAY_TIER_FLASH_LITE="${AGY_LLM_GATEWAY_TIER_FLASH_LITE:-gemini-4-hydrogen-low}"
-  export AGY_LLM_GATEWAY_TIER_FLASH="${AGY_LLM_GATEWAY_TIER_FLASH:-gemini-4-hydrogen-high}"
-  export AGY_LLM_GATEWAY_TIER_PRO="${AGY_LLM_GATEWAY_TIER_PRO:-gemini-4-carbon-medium}"
+  export AGY_LLM_GATEWAY_TIER_FLASH_LITE="${AGY_LLM_GATEWAY_TIER_FLASH_LITE:-gemini-4-hydrogen-high}"
+  export AGY_LLM_GATEWAY_TIER_FLASH="${AGY_LLM_GATEWAY_TIER_FLASH:-gemini-4-neon-xhigh}"
+  export AGY_LLM_GATEWAY_TIER_PRO="${AGY_LLM_GATEWAY_TIER_PRO:-gemini-4-carbon-high}"
 }
 
 # --hub (VS Code extension), opted-in ACP sessions, and explicit AGY_LOCAL_GATEWAY=on|1 sessions
