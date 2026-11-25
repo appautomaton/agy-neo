@@ -110,6 +110,12 @@
  "model.fitPendingLabel -> `…` after the text, not `...`": [
   "00301e07eb8dfd89"
  ],
+ "model.renderStepRow @+0x194 -> `⋆`": [
+  "00301e07eb8dfd89"
+ ],
+ "model.renderStepRow @+0x2c0 -> `⊹`": [
+  "00301e07eb8dfd89"
+ ],
  "modelapiccpa.(*Client).Generate -> route nil FeatureProvider through keepAlivePings": [
   "5098056eaa9c4f98"
  ],
@@ -453,6 +459,9 @@
  ],
  "store.findLastToolGroupAbsIdx -> a step with thought stops the scan at every verbosity": [
   "7679491eeac7dd9e"
+ ],
+ "swarm.StatusRow @+0x2dc -> `✦`": [
+  "00301e07eb8dfd89"
  ],
  "tea.(*Program).translateInputEvent -> light/dark notification becomes an OSC 11 background query": [
   "8ee02d125c2d3010"

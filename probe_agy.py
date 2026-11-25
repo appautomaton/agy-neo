@@ -598,7 +598,7 @@ def run_live_probe(binary: Path) -> tuple[bool, str]:
     work.mkdir()
     sl_log = root / "sl.jsonl"
     sl_script = root / "sl.sh"
-    sl_script.write_text(f"#!/bin/sh\ncat >> {sl_log}\necho '' >> {sl_log}\necho 'SL_OK'\n")
+    sl_script.write_text(f"#!/bin/sh\nline=$(cat)\nprintf '%s\\n' \"$line\" >> {sl_log}\necho 'SL_OK'\n")
     sl_script.chmod(0o755)
 
     settings = {

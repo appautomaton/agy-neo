@@ -137,7 +137,7 @@ TARGET_SYMBOLS: dict[str, str] = {
 }
 
 # Version-variant symbols (v1.5.14 unified Gateway request building and renamed glamourStyleForScheme -> glamourStyle;
-# v1.5.16 extracted fitPendingLabel and added activityPhaseTimer.elapsed in pendingLineView).
+# v1.5.16 extracted fitPendingLabel, added activityPhaseTimer.elapsed in pendingLineView, and added renderStepRow).
 OPTIONAL_SYMBOLS: dict[str, str] = {
     "glamourStyle": "google3/third_party/jetski/cli/render/render.glamourStyle",
     "glamourStyleForScheme": "google3/third_party/jetski/cli/render/render.glamourStyleForScheme",
@@ -146,6 +146,8 @@ OPTIONAL_SYMBOLS: dict[str, str] = {
     "GenerateContentFromGateway": "google3/third_party/jetski/language_server/code_assist_client/codeassistclient.(*CodeAssistClient).GenerateContentFromGateway",
     "fitPendingLabel": "google3/third_party/jetski/cli/model/model.fitPendingLabel",
     "activityPhaseTimerElapsed": "google3/third_party/jetski/cli/model/model.(*activityPhaseTimer).elapsed",
+    "markStepRow": "google3/third_party/jetski/cli/model/model.renderStepRow",
+    "markSwarmRow": "google3/third_party/jetski/cli/swarm/swarm.StatusRow",
 }
 
 class PatchSite(NamedTuple):
@@ -1594,7 +1596,7 @@ def _gemini_fill(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> 
     if any(not 0 < len(v) < 16 or not v.isascii() for v in PENDING_VERBS):
         raise RuntimeError("each pending-line verb must be 1-15 ASCII bytes")
     verbs = b"".join((bytes([len(v)]) + v.encode()).ljust(16, b"\x00") for v in PENDING_VERBS)
-    marks = [m.encode() for m in TOOL_MARKS.values()]
+    marks = [*(m.encode() for m in TOOL_MARKS.values()), SWARM_MARK.encode()]
     raw = verbs + rgba + b"".join(frames) + b"".join(colors) + b"".join(marks)
     blob = raw.ljust((len(raw) + 15) & ~15, b"\x00")
     paint_start, paint_end = funcs["halloweenPaint"]
@@ -2995,20 +2997,23 @@ def _resolve_code_theme_sites(
 # running one pulsed `●`/`○`; now `⋆` (U+22C6, a small solid star, 434 units beside the spinner's
 # `✦` at 572) and `⊹` (U+22B9, a thin four-point twinkle). Both are East Asian Width neutral, three
 # UTF-8 bytes like the circles, so only the `adrp`/`add` pairs that load them change. Their colors are
-# untouched: green done, red failed, yellow running. Only the transcript's renderers change (tool,
-# command, subagent, task, background-command and workflow rows); lists and pickers elsewhere keep circles.
+# untouched: green done, red failed, yellow running. `model.renderStepRow` (checklist/steps) joins the
+# same `⋆`/`⊹` family, and `swarm.StatusRow` takes `✦` (U+2726); lists and pickers elsewhere keep circles.
 TOOL_MARKS = {"●": "⋆", "○": "⊹"}
+SWARM_MARK = "✦"
 TOOL_MARK_FUNCS = ("markTool", "markStatus", "markRunningDot", "markTask", "markSubagent", "markBackground",
-                   "markMilestone", "markWorkflowAgent", "markWorkflowCall", "markWorkflow")
+                   "markMilestone", "markWorkflowAgent", "markWorkflowCall", "markWorkflow", "markStepRow")
 
 
 def _resolve_tool_mark_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
-    """Sites #57: `⋆` for `●` and `⊹` for `○` in the transcript's status marks."""
+    """Sites #57: `⋆` for `●` and `⊹` for `○` in transcript/step status marks, plus `✦` for Swarm's status row."""
     _, _, at = _gemini_fill(data, funcs)
     text_end = _text_tail_cave(data)[0]
+    all_symbols = {**TARGET_SYMBOLS, **OPTIONAL_SYMBOLS}
     # The circles' addresses, from RunningDot, which loads each once (`○` lit, `●` not). A patched
     # binary loads the marks instead; then every site already reads as patched.
     star = {}
+    solid_va = None
     for circle, mark in TOOL_MARKS.items():
         loads = set()
         lo, hi = funcs["markRunningDot"]
@@ -3022,10 +3027,15 @@ def _resolve_tool_mark_sites(data: bytes | bytearray, funcs: dict[str, tuple[int
                 loads.add(va)
         if len(loads) != 1:
             raise RuntimeError(f"render.RunningDot no longer loads one `{circle}`")
-        star[loads.pop()] = at[mark.encode()]
+        circle_va = loads.pop()
+        if circle == "●":
+            solid_va = circle_va
+        star[circle_va] = at[mark.encode()]
     star.update({v: v for v in list(star.values())})
     sites = []
     for name in TOOL_MARK_FUNCS:
+        if name not in funcs:
+            continue
         lo, hi = funcs[name]
         found = 0
         for o in range(lo, hi - 8, 4):
@@ -3038,11 +3048,26 @@ def _resolve_tool_mark_sites(data: bytes | bytearray, funcs: dict[str, tuple[int
                 continue
             patched = encode_adrp_add(VM_BASE + o, star_va, rd)
             glyph = next(m for m in TOOL_MARKS.values() if at[m.encode()] == star_va)
-            sites.append(PatchSite("tool-marks", f"{TARGET_SYMBOLS[name].rsplit('/', 1)[1]} @+{o - lo:#x} -> `{glyph}`",
+            sites.append(PatchSite("tool-marks", f"{all_symbols[name].rsplit('/', 1)[1]} @+{o - lo:#x} -> `{glyph}`",
                                    VM_BASE + o, o, _recoverable(data, o, patched), patched))
             found += 1
         if not found:
-            raise RuntimeError(f"{TARGET_SYMBOLS[name]} no longer loads a status circle")
+            raise RuntimeError(f"{all_symbols[name]} no longer loads a status circle")
+    if "markSwarmRow" in funcs:
+        lo, hi = funcs["markSwarmRow"]
+        swarm_va = at[SWARM_MARK.encode()]
+        found = 0
+        for o in range(lo, hi - 8, 4):
+            rd = struct.unpack_from("<I", data, o)[0] & 0x1F
+            va = _adrp_add_at(data, o, rd)
+            if va not in (solid_va, swarm_va):
+                continue
+            patched = encode_adrp_add(VM_BASE + o, swarm_va, rd)
+            sites.append(PatchSite("tool-marks", f"{all_symbols['markSwarmRow'].rsplit('/', 1)[1]} @+{o - lo:#x} -> `{SWARM_MARK}`",
+                                   VM_BASE + o, o, _recoverable(data, o, patched), patched))
+            found += 1
+        if not found:
+            raise RuntimeError(f"{all_symbols['markSwarmRow']} no longer loads a status circle")
     return tuple(sites)
 
 
@@ -3737,8 +3762,16 @@ def _resolve_keepalive_sites(
         raise RuntimeError(f"modelapiccpa.(*Client).Generate: expected 1 call to keepAlivePings, found {len(kp_calls)}")
     kp_call = kp_calls[0]
     ldr_fp_data = _sp_slot(word(kp_call - 4), 0xF94003E0)
-    w_credits = word(kp_call + 4)
-    if ldr_fp_data is None or ldr_fp_data[0] != 1 or (w_credits & 0xFFC003FF) != 0x394003E1:
+    w_post1, w_post2 = word(kp_call + 4), word(kp_call + 8)
+    if (w_post1 & 0xFFC003FF) == 0x394003E1:
+        # v1.5.13–v1.5.16: keepAlivePings return stays in x0; credits reloads into w1.
+        w_credits = w_post1
+    elif w_post1 == 0xAA0003E1 and (w_post2 & 0xFFC003FF) == 0x394003E0:
+        # v1.5.17+: keepAlivePings return moves to x1 before credits reloads into w0.
+        w_credits = w_post2
+    else:
+        w_credits = 0
+    if ldr_fp_data is None or ldr_fp_data[0] != 1 or not w_credits:
         raise RuntimeError("modelapiccpa.(*Client).Generate: unexpected stack loads around keepAlivePings call")
     fp_data_sp = ldr_fp_data[1]
     credits_sp = (w_credits >> 10) & 0xFFF

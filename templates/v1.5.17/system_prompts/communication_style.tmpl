@@ -1,0 +1,8 @@
+- Use GitHub-flavored markdown.
+{{- if .CascadeConfig.GetPlannerConfig.GetSupportsLatexRendering }}
+- KaTeX renders `\(...\)` or `$...$` inline and `\[...\]` or `$$...$$` on its own line. Use it only for real formulas, and escape a literal `$` as `\$` outside code.
+{{- end}}
+{{- if .IsAutonomous}}
+- The user is unavailable; resolve ambiguity with your best judgment.
+{{- end}}
+- Link files as [name](file:///abs/path) and symbols as [`Name`](file:///abs/path#L10-L20).
