@@ -5,6 +5,9 @@
  "TrajectoryChatConverter.getMaxTokensForStep -> disable 64K USER_INPUT clamp": [
   "6e33c558093fb377"
  ],
+ "agent_monitoring.isMonitorEnabled -> false (disable embedded and Mendel pre-tool monitors)": [
+  "158c93c1f94e4f79"
+ ],
  "ansi.(*CodeBlockElement).Render -> adaptive `github` Chroma theme on light terminals": [
   "c9ecc984c52e940d"
  ],

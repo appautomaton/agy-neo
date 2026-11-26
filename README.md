@@ -47,8 +47,9 @@ trim stock system-prompt bloat, and clean up the terminal UI.
   accounting so the status line stays on screen.
 
 **Tool latency and system prompt**
-- Disables synchronous pre-tool LLM safety monitors so tool calls run without an extra model
-  round-trip in front of them.
+- Disables synchronous pre-tool LLM safety monitors at `agent_monitoring.isMonitorEnabled` so tool
+  calls run without an extra model round-trip even when remote Mendel experiments override the
+  embedded config.
 - Replaces or drops verbose stock system-prompt sections (`18.1K → 9.6K` chars in
   [`templates/v1.5.18/`](./templates/v1.5.18/README.md)), verified by SHA-256 against Google's
   stock templates before patching.
@@ -97,7 +98,7 @@ Requires macOS on Apple silicon, Python 3.12+, `jq`, and Xcode Command Line Tool
    Set `CPA_API_KEY` in `~/.gemini/agy-gateway.env`. Plain `agy` uses Google OAuth;
    `agy --settings '{"modelProvider":"gemini"}'` (or `AGY_LOCAL_GATEWAY=on`, or VS Code `--hub`)
    routes through the local gateway via `modelapiccpa`.
-6. Verify with `python3 patch_agy.py --status -v`: `~/.local/bin/agy` reports `patched` (`156`
+6. Verify with `python3 patch_agy.py --status -v`: `~/.local/bin/agy` reports `patched` (`154`
    sites) and `~/.gemini/bin/agy` reports `wrapper`.
 
 ## Upgrading to a new `agy` release

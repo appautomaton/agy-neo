@@ -457,7 +457,7 @@ def compare_sites(old_bin: Path, new_bin: Path, context: int = 0x40) -> int:
     flagged = 0
     for name, b in new_sites.items():
         a = old_sites.get(name)
-        if a is None or a.domain in ("prompt", "tool-monitors"):  # text, not code
+        if a is None or a.domain == "prompt":  # text, not code
             continue
         notes = []
         if len(a.patched) != len(b.patched):

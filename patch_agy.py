@@ -134,6 +134,7 @@ TARGET_SYMBOLS: dict[str, str] = {
     "sharedStyles": "google3/third_party/jetski/cli/render/render.SharedStyles",
     "newMarkdownInputs": "google3/third_party/jetski/cli/render/render.newMarkdownInputs",
     "markdownCacheRender": "google3/third_party/jetski/cli/render/render.(*markdownCache).render",
+    "isMonitorEnabled": "google3/gdm/security/agi_control/agent_monitoring/monitors/go/agent_monitoring.isMonitorEnabled",
 }
 
 # Version-variant symbols (v1.5.14 unified Gateway request building and renamed glamourStyleForScheme -> glamourStyle;
@@ -3366,24 +3367,28 @@ def _resolve_thought_block_sites(data: bytes | bytearray, funcs: dict[str, tuple
 
 
 
-def _resolve_monitor_sites(data: bytes | bytearray) -> tuple[PatchSite, ...]:
-    """Disable synchronous pre-tool LLM monitors (`agy_tool_safety`, `sir_flash_lite`, `severe_internal_risks_agy`)."""
-    header = b"# proto-file: gdm/security/agi_control/agent_monitoring/monitors/monitor_config.proto"
-    noptr_bounds = _section_file_bounds(data, "__DATA", "__noptrdata")
-    start = find_unique_anchor(data, noptr_bounds, header, "MonitorsConfig header")
-    end = data.find(b"\x00", start, noptr_bounds[1])
-    bounds = (start, end if end != -1 else noptr_bounds[1])
-    return tuple(
+def _resolve_monitor_sites(data: bytes | bytearray, funcs: dict[str, tuple[int, int]]) -> tuple[PatchSite, ...]:
+    """Disable synchronous pre-tool monitors regardless of embedded or remote Mendel config.
+
+    Patching the embedded `MonitorsConfig` textproto (`enabled:false`) is overridden on OAuth
+    sessions by `jetski.getMendelConfig` -> `MergeMonitorsConfig`. Every monitor factory gates on
+    `agent_monitoring.isMonitorEnabled`; returning false at entry (`mov x0, xzr; ret`) disables
+    both embedded and remote Mendel monitors cleanly with zero stack usage.
+    """
+    fn_start = funcs["isMonitorEnabled"][0]
+    answer_no = bytes.fromhex("e0031faac0035fd6")  # mov x0, xzr; ret
+    head = bytes(data[fn_start : fn_start + 8])
+    if head != answer_no and head[:4] != bytes.fromhex("900b40f9"):  # ldr x16, [x28, #0x10]
+        raise RuntimeError("agent_monitoring.isMonitorEnabled no longer opens with its stack check")
+    return (
         PatchSite(
             domain="tool-monitors",
-            name=f"MonitorsConfig.{name} -> enabled:false",
-            va=VM_BASE + off,
-            offset=off,
-            original=b"enabled: true",
-            patched=b"enabled:false",
-        )
-        for name in ("agy_tool_safety", "sir_flash_lite", "severe_internal_risks_agy")
-        for off in (find_unique_anchor(data, bounds, f'  name: "{name}"\n  '.encode(), f"Monitor {name}"),)
+            name="agent_monitoring.isMonitorEnabled -> false (disable embedded and Mendel pre-tool monitors)",
+            va=VM_BASE + fn_start,
+            offset=fn_start,
+            original=_recoverable(data, fn_start, answer_no),
+            patched=answer_no,
+        ),
     )
 
 
@@ -4349,7 +4354,7 @@ def _resolve_groups(data: bytes | bytearray, version: str, strict: bool) -> dict
     cave = lambda: out["palette-typography"][3]
     run("cot-rendering", lambda: _resolve_cot_sites(data, funcs, out["palette-typography"][2]), "palette-typography")
     run("statusline-refresh", lambda: _resolve_statusline_refresh_sites(data, funcs))
-    run("tool-monitors", lambda: _resolve_monitor_sites(data))
+    run("tool-monitors", lambda: _resolve_monitor_sites(data, funcs))
     run("color-scheme", lambda: _resolve_color_scheme_sites(data, funcs, (cave()[0], cave()[0] + 0x40)), "palette-typography")
     run("command-elbow", lambda: _resolve_command_elbow_sites(data, funcs))
     run("spinner", lambda: _resolve_spinner_sites(data, funcs))
