@@ -23,6 +23,9 @@
  "config.applyFeatureProviderCheckpointOverrideConfig -> zero expCp.MaxTokenLimit": [
   "8db83f9833aba2f0"
  ],
+ "cortex.(*CascadeManager).populatePlatformModels -> bypass \"enable-subagent-dropdown-models\" gate (unlock explicit subagent models)": [
+  "a1aa95f664a050e6"
+ ],
  "halloween.init -> reserve __noptrbss uint64 (packed telemetry)": [
   "c9ecc984c52e940d"
  ],
@@ -39,6 +42,9 @@
  "halloween.paint -> the breathing star's frames, the Gemini band, the long-turn colors, the pending line's verbs, and the tool marks": [
   "28119556bb8e78ec"
  ],
+ "mixins.(*WorkEfficientlySection).ShouldInclude -> false (omit <work_efficiently> in all auth modes)": [
+  "dbf1e48e8906b2c7"
+ ],
  "model.(*ConversationModel).activityCandidate -> Compacting shows its plain label": [
   "4cd5395fbe37963a",
   "e9207131d4420ac2"
@@ -52,6 +58,33 @@
  ],
  "model.(*ConversationModel).activityCandidate -> past Thinking, go pick the verb": [
   "61835a965c00a370"
+ ],
+ "model.(*ConversationModel).pendingLineLayout -> `…` after the text, not `...`": [
+  "00301e07eb8dfd89"
+ ],
+ "model.(*ConversationModel).pendingLineLayout -> a non-empty line takes the decoration's join too": [
+  "153a8c0764d89bf8"
+ ],
+ "model.(*ConversationModel).pendingLineLayout -> lay out text, suffix, status even with no status": [
+  "ae4fb47c7ec66802"
+ ],
+ "model.(*ConversationModel).pendingLineLayout -> padding comes from elapsedSuffix(m, pad)": [
+  "e58bf8c8c4f64329"
+ ],
+ "model.(*ConversationModel).pendingLineLayout -> statusSlot.fitWithScroll gives 36 columns to the suffix": [
+  "292db247e03a3690"
+ ],
+ "model.(*ConversationModel).pendingLineLayout -> suppress upstream phase timer (keep turn-wide aside)": [
+  "e6d70394d0931476"
+ ],
+ "model.(*ConversationModel).pendingLineLayout -> the frame keeps its one space; no second": [
+  "db453276c8697538"
+ ],
+ "model.(*ConversationModel).pendingLineLayout -> the join sets up in the gap's leaf": [
+  "10d4f3399eae7f0c"
+ ],
+ "model.(*ConversationModel).pendingLineLayout -> the text gives 10 columns to the bare timer": [
+  "bdc5c2efa50a15de"
  ],
  "model.(*ConversationModel).pendingLineView -> `…` after the text, not `...`": [
   "00301e07eb8dfd89"
@@ -155,6 +188,9 @@
  "modelapiccpa.trimLastBlock -> keepalive telemetry helpers and CacheKeepalive abi.Name": [
   "55d019ab133d8f8b",
   "af58226f8191d040"
+ ],
+ "prehooks.newWorkEfficientlyReminderHook.func1 -> return (nil, nil) at entry (suppress single-tool reminders)": [
+  "de8151f0e331e787"
  ],
  "render.(*markdownCache).render -> verify light/dark polarity before caching markdown": [
   "6e97149b0446a430"

@@ -1,32 +1,35 @@
 # Subagent Dispatch, Custom `agent.md` Schema & Model Tier Resolution
 
-Verified against `agy v1.5.1` (`darwin/arm64`) via `__lrodata_gopcln` disassembly of `google3/third_party/jetski/cortex/handlers`, `google3/third_party/oneharness/internal/tools`, `google3/third_party/jetski/models/geminimodels`, and `google3/third_party/jetski/admin_controls`.
+Verified against `agy v1.5.19` (`darwin/arm64`) via `__lrodata_gopcln` disassembly of `google3/third_party/jetski/cortex`, `google3/third_party/jetski/cortex/modelutils`, `google3/third_party/oneharness/internal/tools`, `google3/third_party/jetski/models/geminimodels`, and `google3/third_party/jetski/admin_controls`.
 
 ---
 
 ## 1. Subagent Dispatch & Three-Level Definition Hierarchy
 
 ### 1.1 `invoke_subagent` Runtime Parameters
-`InvokeSubagentTool.launch` (`0x10134f6e0`) resolves the target agent (`findAgentByName`), resolves the requested model tier (`resolveModel`), folds parent cascade config into the agent spec (`foldSubagentConfig` $\rightarrow$ `config.FoldCascadeConfigIntoAgent`), and spawns an asynchronous subagent conversation.
+`InvokeSubagentTool.launch` (`0x1023fd120`) delegates to `subagentResolver.resolve` (`0x10241ce20`), which locates the target agent (`findAgentByName`), validates and resolves the requested model (`resolveModel` @ `0x10241d800`), folds parent cascade config into the agent spec (`foldSubagentConfig` @ `0x10241dd20`), and launches an asynchronous subagent conversation (`launchSubagent` @ `0x1023fe800`).
 
 | Parameter | Allowed Values | Behavior |
 | :--- | :--- | :--- |
 | **`TypeName`** | `'self'` \| `'research'` \| `'image-generator'` \| `<custom>` | Selects built-in, session-defined, or disk-persisted agent spec. |
 | **`Role`** | 2–5 word title | Instance label; multiple concurrent subagents can share `TypeName` with distinct `conversationId` and `Role`. |
-| **`Model`** | `'inherit'` (default) \| `'flash_lite'` \| `'flash'` \| `'pro'` | Model tier override resolved against `TieredModelConfig`. |
-| **`Workspace`** | `'inherit'` (default) \| `'branch'` \| `'share'` | `'inherit'`: shared parent workspace. `'branch'`: full isolated clone (`CreateForkedWorkspaces`). `'share'`: shared repo store with independent worktree/branch (`git worktree` / `hg share`). |
+| **`Model`** | `'inherit'` (default) \| `'flash_lite'` \| `'flash'` \| `'pro'` \| explicit dropdown model (`subagent-models` patch) | Validated against `InvokeSubagentToolConfig.ModelOptions.Options` (§2.2–§2.3). |
+| **`Workspace`** | `'inherit'` (default) \| `'branch'` \| `'share'` | `'inherit'`: shared parent workspace. `'branch'`: full isolated clone. `'share'`: shared repo store with independent worktree/branch (`git worktree` / `hg share`). |
 
-### 1.2 Built-in Subagents (`customizations/builtin/agents.AllAgentsWithConfig` @ `0x1015f3b70`)
+### 1.2 Built-in Subagents (`customizations/builtin/agents.AllAgentsWithConfig` @ `0x101729df0`)
 - **`self`** (`SelfSpecFromCascadeConfig`): Inherits parent tools, system prompt, and model in a fresh context window.
 - **`research`**: Read-only sandbox (`view_file`, `search_web`, read-only `run_command`; no write tools, no external network).
-- **`image-generator`**: Invokes `gemini-3.1-flash-image` (`0x1017e12e8`) and returns saved media paths.
+- **`image-generator`**: Invokes `gemini-3.1-flash-image` and returns saved media paths.
 
 ### 1.3 Session-Scoped Dynamic Subagents (`define_subagent`)
 `DefineSubagentSubHandler.Handle` validates `Name` (rejecting `..` path traversal) and writes a Markdown `agent.md` file into the active conversation's artifact directory (`<appDataDir>/brain/<conversation-id>/`).
 - **Capability switches**: `EnableWriteTools` (file edits + `run_command`), `EnableMCPTools`, `EnableSubagentTools` (recursive subagent spawning).
+- **Quota billing**: Runs as a standard `"agent"` trajectory (`1×` OAuth quota; see §4).
 
 ### 1.4 Persistent Disk-Defined Agents (`agent.md` & `agents.json`)
-`agy` (`v1.1.6+`) discovers custom agents from `.agents/agents/<name>/agent.md` (or `.agents/agents/*.md`) in the workspace and `~/.gemini/config/agents/<name>/agent.md` globally (plus external paths declared in `agents.json`).
+`agy` discovers custom agents from `.agents/agents/<name>/agent.md` (or `.agents/agents/*.md`) in the workspace and `~/.gemini/config/agents/<name>/agent.md` globally (plus external paths declared in `agents.json`), parsed by `customizations.ParseAgentScriptItemFromMarkdown` (`0x1017ac3d0`).
+
+> **Warning (`v1.5.17+` OAuth `4×` quota penalty)**: Disk-defined custom agents launched via `agy --agent <name>` or `invoke_subagent` are wrapped in `cortex.(*customAgentModelAPI)` and billed at **`4×` OAuth quota** (`RequestType: "custom_agent"`). See §4 before defining disk agents for OAuth sessions.
 
 **Supported YAML Frontmatter Fields (`customizations` Go struct tags)**:
 ```yaml
@@ -35,7 +38,7 @@ mainAgent: false                   # Can be launched as top-level `agy --agent <
 subagent: true                     # Exposed in Available subagents for `invoke_subagent`
 hidden: false                      # Hide from `/agents` UI list
 disabled: false                    # Disable ingestion
-model: gemini-3.8-flash-high       # Default model when invoked with `Model: 'inherit'`
+model: gemini-4-neon-xhigh         # Default model when invoked with `Model: 'inherit'` (validated against ModelOptions)
 inheritCustomizations: true        # Single switch for skills, rules, plugins, subagents, MCP
 inheritMcp: true                   # Granular MCP inheritance override
 commandExecutionPolicy: auto       # Terminal auto-execution policy override
@@ -53,48 +56,56 @@ Your instructions here...
 
 ---
 
-## 2. Default Model Tiers (`flash_lite`, `flash`, `pro`)
+## 2. Model Tier Resolution, `ModelOptions` Validation & Explicit Dropdown Unlock
 
-When `invoke_subagent` (or internal monitors/title generation) requests a model tier, `modelutils.SubagentModelsFromTieredConfig` resolves the tier against `FetchAvailableModelsResponse.tiered_model_ids` (`TieredModelConfig`).
+When `invoke_subagent` (or `run_workflow` / internal utility calls) requests a model tier or named model, `cortex.(*CascadeManager).populatePlatformModels` (`0x102587970`) fetches the active catalog via `modelutils.FetchAvailableModels` (`0x101771dd0`) and builds both `ModelTierConfig` (`modelutils.ModelTierConfigFromTieredConfig` @ `0x101773140`) and `InvokeSubagentToolConfig.ModelOptions` (`modelutils.SubagentModelsFromAvailableModels` @ `0x101772640`).
 
-### 2.1 `geminimodels.Catalog()` (`0x1017e0a00` — Active Under `GEMINI_API_KEY` / `"modelProvider": "gemini"`)
-When running with `GEMINI_API_KEY` and `--settings '{"modelProvider":"gemini"}'`, `CodeAssistClient.fetchAvailableModels` bypasses remote CloudCode catalog discovery and returns the static `geminimodels.Catalog()`:
+### 2.1 OAuth vs. Gateway Model Tiers (`v1.5.19`)
 
-| Tier / Slot | Hardcoded Model ID | Instruction VA (`v1.5.1`) | Notes |
+| Tier | Google OAuth (Cloud Code `FetchAvailableModels`) | Enterprise Gateway / `GEMINI_API_KEY` (`geminimodels.Catalog` @ `0x101851380`) | `hub-wrapper.sh` Gateway Default (`AGY_LLM_GATEWAY_TIER_*`) |
 | :--- | :--- | :--- | :--- |
-| **`pro`** (`TieredModelConfig.Pro`) | **`gemini-4-argon-high`** | `0x1017e13dc` | Default 4.0 Pro/Argon tier |
-| **`flash`** (`TieredModelConfig.Flash`) | **`gemini-3.8-flash-medium`** | `0x1017e1390` | Default 3.8 Flash tier |
-| **`flash_lite`** (`TieredModelConfig.FlashLite`) | **`gemini-3.1-flash-lite-preview`** | `0x1017e1344` | Used by `flash_lite` subagents, `conversation_title.go`, and `sir_flash_lite` monitor |
-| **`DefaultAgentModelId`** | `gemini-3.1-pro-low` | `0x1017e1278` | Fallback when no session model is selected |
-| **`CommandModelIds` / `TabModelIds`** | `gemini-3.1-flash-lite-preview` | `0x1017e129c` | Inline command/tab completion model |
-| **`ImageGenerationModelIds`** | `gemini-3.1-flash-image` | `0x1017e12e8` | Backing model for `image-generator` subagent |
+| **`flash_lite`** | **`gemini-3.5-flash-lite`** | `gemini-3.1-flash-lite-preview` | `gemini-4-hydrogen-high` |
+| **`flash`** | **`gemini-4-hydrogen-tiered-high`** | `gemini-3.8-flash-medium` | `gemini-4-neon-xhigh` |
+| **`pro`** | **`gemini-4-hydrogen-tiered-xhigh`** | `gemini-4-argon-high` | `gemini-4-carbon-high` |
 
-> **Offline Fallback (`codeassistclient.buildDefaultAvailableModels` @ `0x101b74830`)**: If OAuth mode is active and remote catalog fetch fails completely, fallback tiers are `flash_lite` = `gemini-3.1-flash-lite-preview`, `flash` = `gemini-3.7-flash-medium`, `pro` = `gemini-3.1-pro-low-thinking`.
+Additional static slots in `geminimodels.Catalog()` (`v1.5.19: 0x101851380`):
+- `DefaultAgentModelId`: `gemini-3.1-pro-low`
+- `CommandModelIds` / `TabModelIds`: `gemini-3.1-flash-lite-preview`
+- `ImageGenerationModelIds`: `gemini-3.1-flash-image`
+- **Offline OAuth fallback** (`codeassistclient.buildDefaultAvailableModels` @ `0x101f136c0`): if remote catalog fetch fails completely under OAuth, fallback tiers are `flash_lite` = `gemini-3.1-flash-lite-preview`, `flash` = `gemini-3.7-flash-medium`, `pro` = `gemini-3.1-pro-low-thinking`.
 
-### 2.2 `CLIProxyAPI` (`localhost:5233`) Routing Pitfall & Fix
-Because `geminimodels.Catalog()` hardcodes `flash_lite` to `gemini-3.1-flash-lite-preview`:
-- Every conversation start (`conversation_title.go:203`) and every `run_command` pre-check (`llm_monitor.go:712` `sir_flash_lite`) sends a request for `model: "gemini-3.1-flash-lite-preview"`.
-- If `CLIProxyAPI` does not route `gemini-3.1-flash-lite-preview`, it returns `400 Bad Request: unknown provider for model gemini-3.1-flash-lite-preview` ( forcing `severe_internal_risks_agy` to re-run on `MODEL_TIER_FLASH` and breaking auto-titles).
-- **Fix**: Alias `gemini-3.1-flash-lite-preview` $\rightarrow$ `gemini-3.8-flash-low` in `CLIProxyAPI` (or avoid `Model: 'flash_lite'` in `invoke_subagent`).
+> **CLIProxyAPI (`localhost:5233`) routing note**: Without `AGY_LLM_GATEWAY_TIER_FLASH_LITE` (which `hub-wrapper.sh` sets to `gemini-4-hydrogen-high`), `geminimodels.Catalog()` routes conversation title generation and `flash_lite` subagents to `gemini-3.1-flash-lite-preview`. If bypassing `hub-wrapper.sh` with `--settings '{"modelProvider":"gemini"}'`, alias `gemini-3.1-flash-lite-preview` in CLIProxyAPI or set `AGY_LLM_GATEWAY_TIER_FLASH_LITE`.
+
+### 2.2 `v1.5.18+` `ModelOptions` Validation on `invoke_subagent` and `agent.md`
+In `v1.5.18+`, `tools.subagentResolver.resolveModel` (`0x10241d800`) validates the requested model—whether passed via `invoke_subagent`'s `Model` argument **or** declared via `model:` in an `agent.md` frontmatter—through `tools.findNamedModel` (`0x1023fe610`) against `InvokeSubagentToolConfig.ModelOptions.Options` (case-insensitive `strings.EqualFold`) before calling `modelutils.ResolveCatalogModel` (`0x101771820`).
+
+If the requested model is absent from `ModelOptions.Options` (and is not `inherit`), `resolveModel` rejects the launch (or forces `inherit` when `AlwaysInheritModel` is set). Under stock Google OAuth, `ModelOptions.Options` only exposes the three tier aliases (`flash_lite`, `flash`, `pro`) plus `inherit`, so specifying an explicit model such as `gemini-4-neon-xhigh` or `Gemini 4 Neon (XHigh)` fails validation on both `invoke_subagent` and `agent.md`.
+
+### 2.3 Binary Unlock: `subagent-models` Group (`patch_agy.py`)
+Inside `cortex.(*CascadeManager).populatePlatformModels` (`v1.5.19: 0x102587970`, `v1.5.18: 0x1025614a0`), upstream looks up the `"enable-subagent-dropdown-models"` experiment flag via `runtime.mapaccess2_faststr`:
+- **True branch (`+0x204`)**: Passes the full `*FetchAvailableModelsResponse` (`[sp, #0x50]`) to `modelutils.SubagentModelsFromAvailableModels`, populating `ModelOptions.Options` with `inherit`, the three tier aliases, **and** every available dropdown model (such as `Gemini 4 Neon (Low..XHigh)`, `Gemini 4 Carbon (Low..High)`, `Gemini 4 Hydrogen (Low..XHigh)`, and `Gemini 4 Argon (Low..High)`).
+- **False branch (`+0x210`, stock default)**: Constructs a stripped `FetchAvailableModelsResponse` containing only `TieredModelIds`, hiding every explicit dropdown model.
+
+Our `subagent-models` patch group (`1` site, `4B` at `populatePlatformModels + 0x1d0`) replaces `tbz w1, #0, false_branch` with `b true_branch`, unlocking explicit dropdown model selection for `invoke_subagent`, `agent.md`, and `run_workflow` across both Google OAuth and Gateway sessions.
 
 ---
 
 ## 3. Configuration File Hierarchy & Overrides
 
-`agy` maintains **two distinct JSON configuration schemas** that must not be confused:
+`agy` maintains **two distinct JSON configuration schemas**:
 
 | Config File | Go Parser / Struct | Purpose & Model Controls |
 | :--- | :--- | :--- |
 | **`~/.gemini/antigravity-cli/settings.json`** | `cli/types.CliSetting` | TUI session state: `"model"`, `"contextWindow"`, `"agentMode"`, `"toolPermission"`, `"modelProvider"`, `"customModels"`. **Does not** configure `TieredModelConfig`. |
-| **`~/.gemini/config/config.json`** (and `/Library/Application Support/Antigravity/admin_settings.json`) | `admincontrols.AdminSettings` (`loadUserConfigSettings` @ `0x1015526a0`) | Governance, gateway, and tier overrides: `models.tiers.{flashLite, flash, pro}`, `models.list`, `gateway`, `proxy`, `userSettings`. |
+| **`~/.gemini/config/config.json`** (and `/Library/Application Support/Antigravity/admin_settings.json`) | `admincontrols.AdminSettings` | Governance, gateway, and tier overrides: `models.tiers.{flashLite, flash, pro}`, `models.list`, `gateway`, `proxy`, `userSettings`. |
 
-### Where Tiers Apply, and Which Source Wins (`v1.5.8`)
-- **Gateway sessions only.** `admincontrols.(*TieredModelConfig).ApplyToProto` has one caller, `gateway.applyConfiguredModelTiers`, reached only from `gateway.(*AuthProvider).GetModelCatalog`. Under OAuth the catalog, tiers included, comes from Cloud Code, and `models.tiers` in any local file is ignored; changing OAuth tiers would take a binary patch on that path.
-- **Precedence.** `loadEffectiveSettings` calls `MergeSettings(admin, env, user)`, which applies `user settings` (`~/.gemini/config/config.json`), then `environment` (`AGY_LLM_GATEWAY_TIER_*`), then `admin_settings.json`; each later source overwrites the tiers it sets (`mergeTiers`). So the admin file beats the environment, which beats `config.json`. `hub-wrapper.sh` always exports all three tier variables (its defaults fill any unset one), so under the wrapper a `models.tiers` in `config.json` never takes effect.
+### Where Tiers Apply & Which Source Wins
+- **Gateway sessions only.** `admincontrols.(*TieredModelConfig).ApplyToProto` has one caller, `gateway.applyConfiguredModelTiers`, reached only from `gateway.(*AuthProvider).GetModelCatalog`. Under Google OAuth, the catalog and tiers come from Cloud Code and local `models.tiers` files are ignored.
+- **Precedence.** `loadEffectiveSettings` calls `MergeSettings(admin, env, user)`, applying `~/.gemini/config/config.json`, then `AGY_LLM_GATEWAY_TIER_*`, then `admin_settings.json`; each later source overwrites the tiers it sets. Because `hub-wrapper.sh` exports all three `AGY_LLM_GATEWAY_TIER_*` variables, it takes precedence over `config.json` unless overridden via the environment or `admin_settings.json`.
 
 ### Ways to Override Subagent Models
-1. **Per-Subagent Type (Works in all auth modes)**: Set `model: <model-id>` in `~/.gemini/config/agents/<name>/agent.md` (or `.agents/agents/<name>/agent.md`) and invoke with default `Model: 'inherit'`.
-2. **Gateway Tier Env Vars (`admincontrols.ParseEnvOverrides` @ `0x1015507e0`)**:
+1. **Explicit model via `invoke_subagent` / `run_workflow` (All auth modes with `subagent-models` patch)**: Pass a dropdown model name/ID (e.g. `Gemini 4 Neon (XHigh)` / `gemini-4-neon-xhigh`) or a tier alias (`flash_lite`, `flash`, `pro`).
+2. **Gateway Tier Env Vars**:
    - `AGY_LLM_GATEWAY_TIER_FLASH_LITE`
    - `AGY_LLM_GATEWAY_TIER_FLASH`
    - `AGY_LLM_GATEWAY_TIER_PRO`
@@ -103,10 +114,30 @@ Because `geminimodels.Catalog()` hardcodes `flash_lite` to `gemini-3.1-flash-lit
    {
      "models": {
        "tiers": {
-         "flashLite": "gemini-3.8-flash-low",
-         "flash": "gemini-3.8-flash-high",
-         "pro": "gemini-4-argon-high"
+         "flashLite": "gemini-4-hydrogen-high",
+         "flash": "gemini-4-neon-xhigh",
+         "pro": "gemini-4-carbon-high"
        }
      }
    }
    ```
+4. **Per-agent `agent.md` frontmatter**: Set `model:` in `.agents/agents/<name>/agent.md` (subject to `ModelOptions` validation in §2.2 and the `4×` OAuth quota caveat in §4).
+
+---
+
+## 4. `v1.5.17+` `customAgentModelAPI` `4×` OAuth Quota Penalty (Issue #1890)
+
+Starting in `v1.5.17`, `cortex.(*CascadeManager).makeAgentExecutorOpts` (`v1.5.19: 0x1025880a0`) calls `cortex.isCustomAgentTrajectory` (`0x102598f00`). When it returns `true`, the trajectory's `ModelAPI` is wrapped in `cortex.(*customAgentModelAPI)`.
+
+In `cortex.(*customAgentModelAPI).Generate` (`0x102599190`), every request whose `RequestType` (`+0x78`) is `"agent"` is cloned with `RequestType` rewritten to **`"custom_agent"`** before hitting Cloud Code. Under Google OAuth, Cloud Code meters `"custom_agent"` traffic at **`4×` quota** relative to standard `"agent"` requests:
+
+| Dispatch Surface | `isCustomAgentTrajectory` | `RequestType` | OAuth Quota Multiplier |
+| :--- | :---: | :--- | :---: |
+| Top-level `agy` (default) | `false` | `"agent"` | **`1×`** |
+| Built-in subagents (`self`, `research`, `image-generator`) | `false` | `"agent"` | **`1×`** |
+| Session-dynamic `define_subagent` | `false` | `"agent"` | **`1×`** |
+| `/swarm` coordinator & workers | `false` | `"agent"` | **`1×`** |
+| Disk `.agents/agents/*.md` / `~/.gemini/config/agents/*.md` (`invoke_subagent`) | **`true`** | **`"custom_agent"`** | **`4×`** |
+| Top-level `agy --agent <name>` | **`true`** | **`"custom_agent"`** | **`4×`** |
+
+**Practical guidance for OAuth sessions**: Prefer built-in `self`/`research`, session-scoped `define_subagent`, or `/swarm` over disk `.agents/agents/*.md` or `--agent <name>` whenever OAuth quota matters. Enterprise Gateway / `CLIProxyAPI` sessions are unaffected by Cloud Code's `"custom_agent"` multiplier.

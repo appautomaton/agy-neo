@@ -65,12 +65,24 @@ jq -r '
 [[ "$MODEL_DISPLAY" == "-" ]] && MODEL_DISPLAY=""
 [[ "$EFFORT" == "-" ]]        && EFFORT=""
 
+# Derive active <app_data_dir> zero-fork from TRANSCRIPT_PATH (fallback to default when absent).
+local DEFAULT_APP_DATA_DIR="${HOME}/.gemini/antigravity-cli"
+local APP_DATA_DIR="$DEFAULT_APP_DATA_DIR"
+if [[ -n "${TRANSCRIPT_PATH:-}" ]]; then
+  local _TP="$TRANSCRIPT_PATH"
+  [[ "$_TP" == "~/"* ]] && _TP="${HOME}/${_TP#~/}"
+  if [[ "$_TP" == */brain/* ]]; then
+    local _CAND_APP_DIR="${_TP%/brain/*}"
+    [[ -n "$_CAND_APP_DIR" ]] && APP_DATA_DIR="$_CAND_APP_DIR"
+  fi
+fi
+
 # Upstream StatusLineData omits settings.toolPermission; read it in-process (0 forks).
 if [[ -z "$PERM_MODE" ]]; then
-  local SETTINGS_FILE="${HOME}/.gemini/antigravity-cli/settings.json"
+  local SETTINGS_FILE="${APP_DATA_DIR}/settings.json"
   if [[ -r "$SETTINGS_FILE" ]]; then
     local _SLINE=""
-    while IFS= read -r _SLINE; do
+    while IFS= read -r _SLINE || [[ -n "$_SLINE" ]]; do
       if [[ "$_SLINE" == *'"toolPermission"'* && "$_SLINE" =~ '"toolPermission"[[:space:]]*:[[:space:]]*"([^"]+)"' ]]; then
         PERM_MODE="${match[1]}"
         break
@@ -81,7 +93,7 @@ fi
 
 # ─── 2. Stateful TPS & Cache TTL Engine ───────────────────────────────────────
 local STATE_FILE="/tmp/agy_telemetry_${SESSION_ID//[^a-zA-Z0-9_-]/_}.dat"
-local CONV_DB="${HOME}/.gemini/antigravity-cli/conversations/${SESSION_ID}.db"
+local CONV_DB="${APP_DATA_DIR}/conversations/${SESSION_ID}.db"
 local PREV_STATE="idle" START_TIME=$NOW BASE_OUT=$TOT_OUT LAST_TPS="--" STEP_LAT="--" LAST_DELTA=0 CACHE_TS=0
 
 if [[ -f "$STATE_FILE" ]]; then
@@ -413,7 +425,7 @@ fi
 
 local ACTIVE_ROOT="$BASE_ROOT" ACTIVE_HEAD="$BASE_HEAD" IS_WORKTREE="$BASE_IS_WT"
 integer TRANSCRIPT_UPDATED=0
-[[ -z "${TRANSCRIPT_PATH:-}" ]] && TRANSCRIPT_PATH="${HOME}/.gemini/antigravity-cli/brain/${SESSION_ID}/.system_generated/logs/transcript.jsonl"
+[[ -z "${TRANSCRIPT_PATH:-}" ]] && TRANSCRIPT_PATH="${APP_DATA_DIR}/brain/${SESSION_ID}/.system_generated/logs/transcript.jsonl"
 
 if [[ -r "$TRANSCRIPT_PATH" ]]; then
   local -A T_STAT=()
@@ -602,7 +614,14 @@ fi
 
 # ─── 10. Atomic Block 5: Context Window % (Pastel Buttercream / Peach / Rose) ─
 # Load agy-neo.conf once (0 forks) for both auto-compact window and keepalive policy.
-local NEO_CONF="${AGY_NEO_CONFIG:-${HOME}/.gemini/antigravity-cli/agy-neo.conf}"
+local NEO_CONF="${AGY_NEO_CONFIG:-}"
+if [[ -z "$NEO_CONF" ]]; then
+  if [[ -r "${APP_DATA_DIR}/agy-neo.conf" ]]; then
+    NEO_CONF="${APP_DATA_DIR}/agy-neo.conf"
+  else
+    NEO_CONF="${DEFAULT_APP_DATA_DIR}/agy-neo.conf"
+  fi
+fi
 local CACHE_KEEPALIVE="on" CACHE_TTL="5m" CACHE_MAX_TOUCHES="4" AUTO_COMPACT_WINDOW="512K"
 [[ -r "$NEO_CONF" ]] && source "$NEO_CONF" 2>/dev/null || true
 
@@ -670,7 +689,7 @@ SEG_BG+=("$P_PEACH")
 SEG_TXT+=("${NF_DB} ${B}${CACHE_PCT}%${NB}")
 
 # ─── 12. Atomic Block 7: Implicit Cache TTL Countdown & Keepalive Policy ──────
-# Policy loads live from ~/.gemini/antigravity-cli/agy-neo.conf (with AGY_CACHE_* env overrides).
+# Policy loads live from <app_data_dir>/agy-neo.conf (fallback ~/.gemini/antigravity-cli/agy-neo.conf; AGY_CACHE_* overrides).
 # Empirical agy/Gemini implicit cache cliff is 5.0 min (300s); default touch fires at 4m30s (270s).
 parse_duration_sec() {
   local raw="${${1:-}:l}" fallback="${2:-0}"
